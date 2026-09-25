@@ -1,0 +1,6 @@
+path: C:\Users\marki\OneDrive\Documentos\GitHub\L.A.R.A-Visao-computacional\dataset
+train: images/train
+val: images/val
+names:
+  0: coca_cola_2l
+  1: doritos
