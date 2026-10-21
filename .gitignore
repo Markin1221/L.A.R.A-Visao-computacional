@@ -216,3 +216,12 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# --- projeto L.A.R.A ---
+runs/
+*.pt
+*.mp4
+*.avi
+dataset/images/
+dataset/labels/
+dataset/preview/
