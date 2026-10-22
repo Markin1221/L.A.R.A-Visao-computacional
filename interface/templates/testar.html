@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>L.A.R.A · Testar</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="{{ url_for('static', filename='estilo.css') }}">
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="logo">L</div>
+    <div>
+      <h1>L.A.R.A · Visão Computacional</h1>
+      <p>Teste o modelo treinado com uma imagem, um vídeo ou a webcam</p>
+    </div>
+    <nav><a href="/">Treinar</a><a href="/testar" class="ativo">Testar</a></nav>
+  </header>
+
+  <div class="grid">
+    <div class="card">
+      <h2>Fonte</h2>
+      <div class="seg">
+        <button type="button" data-modo="imagem" class="ativo">Imagem</button>
+        <button type="button" data-modo="video">Vídeo</button>
+        <button type="button" data-modo="webcam">Webcam</button>
+      </div>
+
+      <div class="drop" id="drop">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M12 16V4m0 0-4 4m4-4 4 4M4 16v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>
+        <strong id="nomeArquivo">Arraste uma imagem aqui</strong>
+        ou clique para escolher
+      </div>
+      <input type="file" id="arquivo" hidden>
+      <p class="nota oculto" id="notaWebcam">Usa a webcam conectada a este computador (câmera 0).</p>
+
+      <label class="faixa" for="conf">Confiança mínima <b id="confValor">0.25</b></label>
+      <input type="range" id="conf" min="0.05" max="0.95" step="0.05" value="0.25">
+
+      <button type="button" id="botao">Testar</button>
+      <button type="button" id="parar" class="secundario oculto">Parar</button>
+      <div class="msg" id="msg"></div>
+
+      <h2 style="margin-top:22px">Modelo</h2>
+      <div class="info-modelo" id="infoModelo">carregando…</div>
+    </div>
+
+    <section class="card">
+      <div class="status-top">
+        <h2 style="margin:0">Resultado</h2>
+        <span class="nota" id="tempoInferencia" style="margin:0"></span>
+      </div>
+      <div class="viewer" id="viewer"><span id="vazio">O resultado aparece aqui</span><img id="saida" class="oculto" alt="resultado"></div>
+      <div class="chips" id="chips"></div>
+    </section>
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+let modo = "imagem", arquivo = null;
+
+const textos = {
+  imagem: { aceita: "image/*", drop: "Arraste uma imagem aqui" },
+  video:  { aceita: "video/*", drop: "Arraste um vídeo aqui" },
+};
+
+document.querySelectorAll(".seg button").forEach(b => b.onclick = () => {
+  pararStream();
+  modo = b.dataset.modo;
+  document.querySelectorAll(".seg button").forEach(x => x.classList.toggle("ativo", x === b));
+  arquivo = null;
+  $("msg").textContent = "";
+  const webcam = modo === "webcam";
+  $("drop").classList.toggle("oculto", webcam);
+  $("notaWebcam").classList.toggle("oculto", !webcam);
+  if (!webcam) {
+    $("arquivo").accept = textos[modo].aceita;
+    $("nomeArquivo").textContent = textos[modo].drop;
+  }
+});
+
+function escolher(f) {
+  if (!f) return;
+  arquivo = f;
+  $("nomeArquivo").textContent = `${f.name} · ${(f.size / 1048576).toFixed(1)} MB`;
+}
+const drop = $("drop");
+drop.onclick = () => $("arquivo").click();
+$("arquivo").onchange = () => escolher($("arquivo").files[0]);
+drop.ondragover = e => { e.preventDefault(); drop.classList.add("sobre"); };
+drop.ondragleave = () => drop.classList.remove("sobre");
+drop.ondrop = e => { e.preventDefault(); drop.classList.remove("sobre"); escolher(e.dataTransfer.files[0]); };
+
+$("conf").oninput = () => { $("confValor").textContent = Number($("conf").value).toFixed(2); };
+
+function mostrar(src) {
+  $("vazio").classList.add("oculto");
+  $("saida").classList.remove("oculto");
+  $("saida").src = src;
+}
+
+function pararStream() {
+  if (!$("parar").classList.contains("oculto")) {
+    $("saida").src = "";
+    $("saida").classList.add("oculto");
+    $("vazio").classList.remove("oculto");
+    $("vazio").textContent = "Parado";
+  }
+  $("parar").classList.add("oculto");
+  $("botao").classList.remove("oculto");
+}
+$("parar").onclick = pararStream;
+
+function chips(deteccoes) {
+  $("chips").innerHTML = deteccoes.length
+    ? deteccoes.map(d => `<span class="chip">${d.classe}<b>${(d.conf * 100).toFixed(0)}%</b></span>`).join("")
+    : '<span class="nota" style="margin:0">Nenhum produto detectado</span>';
+}
+
+$("botao").onclick = async () => {
+  $("msg").textContent = "";
+  $("chips").innerHTML = "";
+  $("tempoInferencia").textContent = "";
+  const conf = $("conf").value;
+
+  if (modo === "webcam") {
+    iniciarStream(`/stream?fonte=webcam&conf=${conf}`);
+    return;
+  }
+  if (!arquivo) { $("msg").textContent = "Escolha um arquivo."; return; }
+
+  const dados = new FormData();
+  dados.append("arquivo", arquivo);
+  dados.append("conf", conf);
+  $("botao").disabled = true;
+  $("botao").textContent = modo === "imagem" ? "Analisando…" : "Enviando vídeo…";
+
+  try {
+    const r = await fetch(modo === "imagem" ? "/testar/imagem" : "/testar/video", { method: "POST", body: dados });
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.erro || "erro");
+    if (modo === "imagem") {
+      mostrar(j.imagem);
+      chips(j.deteccoes);
+      $("tempoInferencia").textContent = `${j.tempo_ms.toFixed(0)} ms`;
+    } else {
+      iniciarStream(`/stream?fonte=${encodeURIComponent(j.id)}&conf=${conf}`);
+    }
+  } catch (err) {
+    $("msg").textContent = err.message;
+  }
+  $("botao").disabled = false;
+  $("botao").textContent = "Testar";
+};
+
+function iniciarStream(url) {
+  mostrar(url + "&t=" + Date.now());
+  $("botao").classList.add("oculto");
+  $("parar").classList.remove("oculto");
+  $("tempoInferencia").textContent = "ao vivo";
+}
+$("saida").onerror = () => {
+  if (!$("parar").classList.contains("oculto")) {
+    $("msg").textContent = "Não deu pra abrir a fonte (webcam ocupada ou vídeo inválido).";
+    pararStream();
+  }
+};
+
+fetch("/modelo").then(r => r.json()).then(m => {
+  $("infoModelo").innerHTML = m.existe
+    ? `<b>modelos/melhor.pt</b><br>Atualizado em ${m.atualizado}<br>Classes: <b>${m.classes.join(", ")}</b>`
+    : "Nenhum modelo treinado ainda. Treine pela aba <b>Treinar</b>.";
+  if (!m.existe) $("botao").disabled = true;
+});
+</script>
+</body>
+</html>

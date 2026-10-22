@@ -25,6 +25,18 @@ python testes-b-box/popular_dataset.py caminho/video_sem_produto.mp4 --fundo
 - `--intervalo` (padrão 0.5 s) controla de quanto em quanto tempo um frame é salvo.
 - `--fundo` gera imagens negativas (sem produto), que reduzem falsos positivos.
 
+## Treinar
+
+Ao importar um vídeo com `popular_dataset.py`, o treino roda automaticamente no final
+(use `--sem-treino` para pular, por exemplo ao importar vários vídeos em sequência).
+
+```bash
+python testes-b-box/treinar.py --epocas 50
+```
+
+- O primeiro treino parte de `testes-yolo/yolo11n.pt`; os seguintes partem de `modelos/melhor.pt` (fine-tune).
+- O melhor modelo fica em `modelos/melhor.pt`; logs e gráficos em `runs/treino/`.
+
 ## Estrutura
 
 - `dataset/` – dataset YOLO (`images/`, `labels/`, `data.yaml`, `classes.json`)

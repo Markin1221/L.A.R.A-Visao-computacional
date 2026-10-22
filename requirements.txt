@@ -2,3 +2,4 @@
 ultralytics==8.4.158
 opencv-python==5.0.0.93
 numpy==2.5.3
+flask

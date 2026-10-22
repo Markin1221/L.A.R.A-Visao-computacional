@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>L.A.R.A · Treino</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="{{ url_for('static', filename='estilo.css') }}">
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="logo">L</div>
+    <div>
+      <h1>L.A.R.A · Visão Computacional</h1>
+      <p>Envie um vídeo, gere o dataset e treine o YOLO</p>
+    </div>
+    <nav><a href="/" class="ativo">Treinar</a><a href="/testar">Testar</a></nav>
+  </header>
+
+  <div class="grid">
+    <form class="card" id="form">
+      <h2>Novo vídeo</h2>
+      <div class="drop" id="drop">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M12 16V4m0 0-4 4m4-4 4 4M4 16v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>
+        <strong id="nomeArquivo">Arraste o vídeo aqui</strong>
+        ou clique para escolher
+      </div>
+      <input type="file" id="video" accept="video/*" hidden>
+
+      <label for="produto">Nome do produto</label>
+      <input type="text" id="produto" placeholder="ex: coca cola 2l">
+
+      <label for="epocas">Épocas</label>
+      <input type="number" id="epocas" value="50" min="1">
+
+      <div class="checks">
+        <label><input type="checkbox" id="fundo"> Vídeo sem produto</label>
+        <label><input type="checkbox" id="preview" checked> Salvar preview</label>
+      </div>
+
+      <button type="submit" id="botao">Enviar e treinar</button>
+      <div class="msg" id="msg"></div>
+    </form>
+
+    <section class="card">
+      <div class="status-top">
+        <h2 style="margin:0">Status</h2>
+        <span class="pill" id="pill"><i></i><span id="fase">parado</span></span>
+      </div>
+      <div class="stats">
+        <div class="stat"><span>Época</span><b id="epoca">–</b></div>
+        <div class="stat"><span>Tempo decorrido</span><b id="decorrido">–</b></div>
+        <div class="stat"><span>Restante (aprox.)</span><b id="eta">–</b></div>
+      </div>
+      <div class="barra" id="barra"><div id="progresso"></div></div>
+      <p class="nota">A estimativa usa a média das épocas já concluídas. O treino pode acabar antes se o modelo parar de melhorar.</p>
+    </section>
+  </div>
+
+  <section class="card log-card">
+    <div class="log-top">
+      <h2>Logs</h2>
+      <label><input type="checkbox" id="rolar" checked> Rolar automaticamente</label>
+    </div>
+    <pre id="log">Aguardando envio…</pre>
+  </section>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const drop = $("drop"), inputVideo = $("video");
+let arquivo = null, timer = null;
+
+function escolher(f) {
+  if (!f) return;
+  arquivo = f;
+  $("nomeArquivo").textContent = `${f.name} · ${(f.size / 1048576).toFixed(1)} MB`;
+}
+drop.onclick = () => inputVideo.click();
+inputVideo.onchange = () => escolher(inputVideo.files[0]);
+drop.ondragover = e => { e.preventDefault(); drop.classList.add("sobre"); };
+drop.ondragleave = () => drop.classList.remove("sobre");
+drop.ondrop = e => { e.preventDefault(); drop.classList.remove("sobre"); escolher(e.dataTransfer.files[0]); };
+$("fundo").onchange = () => { $("produto").disabled = $("fundo").checked; };
+
+function tempo(s) {
+  if (s == null) return "–";
+  s = Math.round(s);
+  const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60), seg = s % 60;
+  return h ? `${h}h ${String(m).padStart(2, "0")}m` : `${m}m ${String(seg).padStart(2, "0")}s`;
+}
+
+$("form").onsubmit = async e => {
+  e.preventDefault();
+  $("msg").textContent = "";
+  if (!arquivo) { $("msg").textContent = "Escolha um vídeo."; return; }
+
+  const dados = new FormData();
+  dados.append("video", arquivo);
+  dados.append("produto", $("produto").value);
+  dados.append("epocas", $("epocas").value);
+  dados.append("fundo", $("fundo").checked);
+  dados.append("preview", $("preview").checked);
+
+  $("botao").disabled = true;
+  $("botao").textContent = "Enviando vídeo…";
+  try {
+    const r = await fetch("/enviar", { method: "POST", body: dados });
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.erro || "erro ao enviar");
+    iniciarPolling();
+  } catch (err) {
+    $("msg").textContent = err.message;
+    $("botao").disabled = false;
+  }
+  $("botao").textContent = "Enviar e treinar";
+};
+
+function iniciarPolling() {
+  clearInterval(timer);
+  atualizar();
+  timer = setInterval(atualizar, 1000);
+}
+
+async function atualizar() {
+  let s;
+  try { s = await (await fetch("/status")).json(); } catch { return; }
+
+  $("fase").textContent = s.fase;
+  $("pill").className = "pill " + (s.rodando ? "ativo"
+    : s.fase === "concluido" ? "ok"
+    : s.fase === "erro" ? "erro"
+    : s.fase === "dataset insuficiente" ? "aviso" : "");
+
+  $("epoca").textContent = s.total ? `${s.epoca}/${s.total}` : "–";
+  $("decorrido").textContent = s.decorrido ? tempo(s.decorrido) : "–";
+  $("eta").textContent = s.rodando ? (s.eta != null ? tempo(s.eta) : "calculando…") : (s.fase === "concluido" ? "0m 00s" : "–");
+
+  const barra = $("barra");
+  if (s.rodando && !s.total) {
+    barra.classList.add("indeterminada");
+  } else {
+    barra.classList.remove("indeterminada");
+    const pct = s.fase === "concluido" ? 100 : s.total ? (s.epoca - 1) / s.total * 100 : 0;
+    $("progresso").style.width = Math.max(0, pct) + "%";
+  }
+
+  if (s.linhas.length) {
+    const log = $("log");
+    log.textContent = s.linhas.join("\n");
+    if ($("rolar").checked) log.scrollTop = log.scrollHeight;
+  }
+
+  $("botao").disabled = s.rodando;
+  if (!s.rodando && timer) { clearInterval(timer); timer = null; }
+}
+
+atualizar().then(() => { if ($("botao").disabled) iniciarPolling(); });
+</script>
+</body>
+</html>

@@ -225,3 +225,5 @@ runs/
 dataset/images/
 dataset/labels/
 dataset/preview/
+modelos/
+uploads/

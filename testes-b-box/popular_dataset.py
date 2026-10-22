@@ -5,6 +5,9 @@ Uso (rodando de qualquer pasta):
     python testes-b-box/popular_dataset.py caminho/video.mp4 "coca cola 2l"
     python testes-b-box/popular_dataset.py caminho/video.mp4 "doritos" --preview
     python testes-b-box/popular_dataset.py caminho/video_sem_produto.mp4 --fundo
+    python testes-b-box/popular_dataset.py caminho/video.mp4 "doritos" --sem-treino
+
+Depois de importar, treina o YOLO automaticamente (ver treinar.py).
 """
 import argparse
 import json
@@ -204,12 +207,18 @@ def main():
     parser.add_argument("--fundo", action="store_true", help="video SEM produto (gera imagens negativas)")
     parser.add_argument("--intervalo", type=float, default=0.5, help="segundos entre frames salvos (padrao 0.5)")
     parser.add_argument("--preview", action="store_true", help="salva copias com o bbox desenhado em dataset/preview")
+    parser.add_argument("--sem-treino", action="store_true", help="so importa o video, sem treinar o modelo depois")
+    parser.add_argument("--epocas", type=int, default=50, help="epocas do treino automatico (padrao 50)")
     args = parser.parse_args()
 
     if not args.fundo and not args.produto:
         parser.error("informe o nome do produto (ou use --fundo)")
 
     popularDataset(args.video, args.produto, args.fundo, args.intervalo, args.preview)
+
+    if not args.sem_treino:
+        from treinar import treinar  # mesmo diretorio deste script
+        treinar(epocas=args.epocas)
 
 
 if __name__ == "__main__":
