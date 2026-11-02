@@ -1,59 +1,67 @@
 <!doctype html>
 <html lang="pt-BR">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>L.A.R.A · Testar</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="{{ url_for('static', filename='estilo.css') }}">
+{% include "_cabeca.html" %}
+<title>L.A.R.A | Testar</title>
 </head>
 <body>
-<div class="wrap">
-  <header>
-    <div class="logo">L</div>
-    <div>
-      <h1>L.A.R.A · Visão Computacional</h1>
-      <p>Teste o modelo treinado com uma imagem, um vídeo ou a webcam</p>
-    </div>
-    <nav><a href="/">Treinar</a><a href="/testar" class="ativo">Testar</a></nav>
-  </header>
+<div class="pagina">
+  {% set aba = "testar" %}{% set subtitulo = "Veja o que o modelo reconhece" %}
+  {% include "_topo.html" %}
 
-  <div class="grid">
-    <div class="card">
+  <div class="grade">
+    <div class="painel">
       <h2>Fonte</h2>
-      <div class="seg">
-        <button type="button" data-modo="imagem" class="ativo">Imagem</button>
-        <button type="button" data-modo="video">Vídeo</button>
-        <button type="button" data-modo="webcam">Webcam</button>
+      <div class="seletor" role="group" aria-label="Fonte da imagem">
+        <button type="button" data-modo="imagem" aria-pressed="true">Imagem</button>
+        <button type="button" data-modo="video" aria-pressed="false">Vídeo</button>
+        <button type="button" data-modo="webcam" aria-pressed="false">Webcam</button>
+        <button type="button" data-modo="esp" aria-pressed="false">ESP32</button>
       </div>
 
-      <div class="drop" id="drop">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M12 16V4m0 0-4 4m4-4 4 4M4 16v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>
+      <div class="solta" id="drop" tabindex="0" role="button" aria-label="Escolher arquivo">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M3 8V4h4M17 4h4v4M21 16v4h-4M7 20H3v-4"/><circle cx="12" cy="12" r="3"/></svg>
         <strong id="nomeArquivo">Arraste uma imagem aqui</strong>
-        ou clique para escolher
+        <span>ou clique para escolher</span>
       </div>
-      <input type="file" id="arquivo" hidden>
-      <p class="nota oculto" id="notaWebcam">Usa a webcam conectada a este computador (câmera 0).</p>
+      <input type="file" id="arquivo" accept="image/*" hidden>
+      <p class="nota oculto" id="notaWebcam">Usa a webcam ligada a este computador.</p>
+      <div class="oculto" id="campoEsp">
+        <label for="urlEsp" style="margin-top:0">Endereço da câmera</label>
+        <input type="text" id="urlEsp" placeholder="192.168.1.6" autocomplete="off">
+        <p class="nota">Feche outras abas que mostram a câmera. A ESP32 só envia vídeo para um lugar por vez.</p>
+      </div>
 
-      <label class="faixa" for="conf">Confiança mínima <b id="confValor">0.25</b></label>
+      <label for="modelo">Modelo</label>
+      <select id="modelo">
+        <option value="treinado">Treinado por você</option>
+        <option value="coco">YOLO pré-treinado (80 objetos comuns)</option>
+      </select>
+
+      <label class="faixa" for="conf">Confiança mínima <output id="confValor">0.25</output></label>
       <input type="range" id="conf" min="0.05" max="0.95" step="0.05" value="0.25">
 
       <button type="button" id="botao">Testar</button>
       <button type="button" id="parar" class="secundario oculto">Parar</button>
-      <div class="msg" id="msg"></div>
+      <div class="erro" id="msg" role="alert"></div>
 
-      <h2 style="margin-top:22px">Modelo</h2>
-      <div class="info-modelo" id="infoModelo">carregando…</div>
+      <div class="separado">
+        <h2>Sobre o modelo</h2>
+        <div class="info-modelo" id="infoModelo">Carregando…</div>
+      </div>
     </div>
 
-    <section class="card">
-      <div class="status-top">
-        <h2 style="margin:0">Resultado</h2>
-        <span class="nota" id="tempoInferencia" style="margin:0"></span>
+    <section class="painel">
+      <div class="painel-topo">
+        <h2>Resultado</h2>
+        <span class="ao-vivo" id="tempoInferencia"></span>
       </div>
-      <div class="viewer" id="viewer"><span id="vazio">O resultado aparece aqui</span><img id="saida" class="oculto" alt="resultado"></div>
-      <div class="chips" id="chips"></div>
+      <div class="visor" id="viewer">
+        <span class="canto c1"></span><span class="canto c2"></span><span class="canto c3"></span><span class="canto c4"></span>
+        <span class="mira" id="vazio">Escolha uma fonte e clique em Testar</span>
+        <img id="saida" class="oculto" alt="Imagem com as detecções do modelo">
+      </div>
+      <div class="etiquetas" id="chips" aria-live="polite"></div>
     </section>
   </div>
 </div>
@@ -66,17 +74,20 @@ const textos = {
   imagem: { aceita: "image/*", drop: "Arraste uma imagem aqui" },
   video:  { aceita: "video/*", drop: "Arraste um vídeo aqui" },
 };
+const botoes = document.querySelectorAll(".seletor button");
 
-document.querySelectorAll(".seg button").forEach(b => b.onclick = () => {
+botoes.forEach(b => b.onclick = () => {
   pararStream();
   modo = b.dataset.modo;
-  document.querySelectorAll(".seg button").forEach(x => x.classList.toggle("ativo", x === b));
+  botoes.forEach(x => x.setAttribute("aria-pressed", x === b));
   arquivo = null;
   $("msg").textContent = "";
-  const webcam = modo === "webcam";
-  $("drop").classList.toggle("oculto", webcam);
+  $("chips").innerHTML = "";
+  const webcam = modo === "webcam", esp = modo === "esp";
+  $("drop").classList.toggle("oculto", webcam || esp);
   $("notaWebcam").classList.toggle("oculto", !webcam);
-  if (!webcam) {
+  $("campoEsp").classList.toggle("oculto", !esp);
+  if (!webcam && !esp) {
     $("arquivo").accept = textos[modo].aceita;
     $("nomeArquivo").textContent = textos[modo].drop;
   }
@@ -85,10 +96,11 @@ document.querySelectorAll(".seg button").forEach(b => b.onclick = () => {
 function escolher(f) {
   if (!f) return;
   arquivo = f;
-  $("nomeArquivo").textContent = `${f.name} · ${(f.size / 1048576).toFixed(1)} MB`;
+  $("nomeArquivo").textContent = `${f.name} (${(f.size / 1048576).toFixed(1)} MB)`;
 }
 const drop = $("drop");
 drop.onclick = () => $("arquivo").click();
+drop.onkeydown = e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); $("arquivo").click(); } };
 $("arquivo").onchange = () => escolher($("arquivo").files[0]);
 drop.ondragover = e => { e.preventDefault(); drop.classList.add("sobre"); };
 drop.ondragleave = () => drop.classList.remove("sobre");
@@ -102,50 +114,88 @@ function mostrar(src) {
   $("saida").src = src;
 }
 
+function aoVivo(ligado, texto) {
+  $("tempoInferencia").textContent = texto || "";
+  $("tempoInferencia").classList.toggle("ligado", ligado);
+  $("viewer").classList.toggle("vivo", ligado);
+}
+
 function pararStream() {
   if (!$("parar").classList.contains("oculto")) {
     $("saida").src = "";
     $("saida").classList.add("oculto");
     $("vazio").classList.remove("oculto");
-    $("vazio").textContent = "Parado";
+    $("vazio").textContent = "Parado. Clique em Testar para recomeçar";
   }
+  aoVivo(false);
   $("parar").classList.add("oculto");
   $("botao").classList.remove("oculto");
 }
 $("parar").onclick = pararStream;
 
+// mesma paleta que o YOLO usa pra desenhar as caixas, entao a etiqueta tem a cor da caixa
+const PALETA = ["042AFF","0BDBEB","F3F3F3","00DFB7","111F68","FF6FDD","FF444F","CCED00","00F344","BD00FF",
+                "00B4FF","DD00BA","00FFFF","26C000","01FFB3","7D24FF","7B0068","FF1B6C","FC6D3F","A2FF0B"];
+function corDaClasse(id) {
+  const hex = PALETA[(id ?? 0) % PALETA.length];
+  const [r, g, b] = [0, 2, 4].map(i => parseInt(hex.slice(i, i + 2), 16));
+  const claro = (r * 299 + g * 587 + b * 114) / 1000 > 140;
+  return `--cor:#${hex};--cor-texto:${claro ? "#0A1033" : "#FFFFFF"}`;
+}
+
 function chips(deteccoes) {
   $("chips").innerHTML = deteccoes.length
-    ? deteccoes.map(d => `<span class="chip">${d.classe}<b>${(d.conf * 100).toFixed(0)}%</b></span>`).join("")
-    : '<span class="nota" style="margin:0">Nenhum produto detectado</span>';
+    ? deteccoes.map(d => `<span class="etiqueta" style="${corDaClasse(d.id)}">${d.classe}<b>${d.conf.toFixed(2)}</b></span>`).join("")
+    : '<span class="nota" style="margin:0">Nada reconhecido. Tente baixar a confiança mínima.</span>';
 }
 
 $("botao").onclick = async () => {
   $("msg").textContent = "";
   $("chips").innerHTML = "";
-  $("tempoInferencia").textContent = "";
+  aoVivo(false);
   const conf = $("conf").value;
 
   if (modo === "webcam") {
     iniciarStream(`/stream?fonte=webcam&conf=${conf}`);
     return;
   }
-  if (!arquivo) { $("msg").textContent = "Escolha um arquivo."; return; }
+  if (modo === "esp") {
+    let url = $("urlEsp").value.trim();
+    if (!url) { $("msg").textContent = "Digite o endereço que a ESP32 mostra no Monitor Serial."; return; }
+    if (!/^https?:\/\//.test(url)) url = "http://" + url;
+    if (!/\/stream\/?$/.test(url)) url = url.replace(/\/$/, "") + "/stream";
+    $("urlEsp").value = url;
+    try { localStorage.setItem("lara_url_esp", url); } catch {}
+    $("botao").disabled = true;
+    $("botao").textContent = "Conectando na câmera…";
+    try {
+      const c = await (await fetch(`/checar_esp?url=${encodeURIComponent(url)}`)).json();
+      if (!c.ok) throw new Error(c.erro);
+      iniciarStream(`/stream?fonte=${encodeURIComponent(url)}&conf=${conf}`);
+    } catch (err) {
+      $("msg").textContent = "Não conectou na ESP32: " + err.message;
+    }
+    $("botao").disabled = false;
+    $("botao").textContent = "Testar";
+    return;
+  }
+  if (!arquivo) { $("msg").textContent = modo === "imagem" ? "Escolha uma imagem." : "Escolha um vídeo."; return; }
 
   const dados = new FormData();
   dados.append("arquivo", arquivo);
   dados.append("conf", conf);
+  dados.append("modelo", $("modelo").value);
   $("botao").disabled = true;
   $("botao").textContent = modo === "imagem" ? "Analisando…" : "Enviando vídeo…";
 
   try {
     const r = await fetch(modo === "imagem" ? "/testar/imagem" : "/testar/video", { method: "POST", body: dados });
     const j = await r.json();
-    if (!r.ok) throw new Error(j.erro || "erro");
+    if (!r.ok) throw new Error(j.erro || "Não deu para analisar.");
     if (modo === "imagem") {
       mostrar(j.imagem);
       chips(j.deteccoes);
-      $("tempoInferencia").textContent = `${j.tempo_ms.toFixed(0)} ms`;
+      aoVivo(false, `${j.tempo_ms.toFixed(0)} ms`);
     } else {
       iniciarStream(`/stream?fonte=${encodeURIComponent(j.id)}&conf=${conf}`);
     }
@@ -157,24 +207,41 @@ $("botao").onclick = async () => {
 };
 
 function iniciarStream(url) {
-  mostrar(url + "&t=" + Date.now());
+  mostrar(url + "&modelo=" + $("modelo").value + "&t=" + Date.now());
   $("botao").classList.add("oculto");
   $("parar").classList.remove("oculto");
-  $("tempoInferencia").textContent = "ao vivo";
+  aoVivo(true, "ao vivo");
 }
 $("saida").onerror = () => {
   if (!$("parar").classList.contains("oculto")) {
-    $("msg").textContent = "Não deu pra abrir a fonte (webcam ocupada ou vídeo inválido).";
+    $("msg").textContent = "A imagem parou de chegar. Confira se a câmera está ligada e livre.";
     pararStream();
   }
 };
 
-fetch("/modelo").then(r => r.json()).then(m => {
-  $("infoModelo").innerHTML = m.existe
-    ? `<b>modelos/melhor.pt</b><br>Atualizado em ${m.atualizado}<br>Classes: <b>${m.classes.join(", ")}</b>`
-    : "Nenhum modelo treinado ainda. Treine pela aba <b>Treinar</b>.";
-  if (!m.existe) $("botao").disabled = true;
-});
+try { $("urlEsp").value = localStorage.getItem("lara_url_esp") || ""; } catch {}
+
+function carregarInfo() {
+  $("infoModelo").textContent = "Carregando…";
+  fetch(`/modelo?modelo=${$("modelo").value}`).then(r => r.json()).then(m => {
+    if (!m.existe) {
+      $("infoModelo").innerHTML = $("modelo").value === "coco"
+        ? "Arquivo testes-yolo/yolo11n.pt não encontrado."
+        : "Nenhum modelo treinado ainda. Treine um produto na aba <b>Treinar</b>.";
+      $("botao").disabled = true;
+      return;
+    }
+    const cls = m.classes.length > 10
+      ? m.classes.slice(0, 10).join(", ") + ` e mais ${m.classes.length - 10}`
+      : m.classes.join(", ");
+    $("infoModelo").innerHTML = `<b>${m.arquivo}</b><br>Atualizado em ${m.atualizado}<br>Reconhece: <b>${cls}</b>`;
+    $("botao").disabled = false;
+  }).catch(() => {
+    $("infoModelo").textContent = "Não deu para carregar o modelo. Veja o terminal do Flask.";
+  });
+}
+$("modelo").onchange = () => { pararStream(); carregarInfo(); };
+carregarInfo();
 </script>
 </body>
 </html>

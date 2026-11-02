@@ -1,0 +1,11 @@
+<header class="topo">
+  <a class="marca" href="/">
+    <span class="marca-caixa"><span class="marca-tag">lara 0.99</span>L.A.R.A</span>
+    <span class="marca-texto"><strong>Visão computacional</strong><span>{{ subtitulo }}</span></span>
+  </a>
+  <nav class="abas" aria-label="Seções">
+    <a href="/" {% if aba == "treinar" %}aria-current="page"{% endif %}>Treinar</a>
+    <a href="/testar" {% if aba == "testar" %}aria-current="page"{% endif %}>Testar</a>
+    <a href="/config" {% if aba == "config" %}aria-current="page"{% endif %}>Config</a>
+  </nav>
+</header>

@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+{% include "_cabeca.html" %}
+<title>L.A.R.A | Config</title>
+</head>
+<body>
+<div class="pagina">
+  {% set aba = "config" %}{% set subtitulo = "Deixe a interface do seu jeito" %}
+  {% include "_topo.html" %}
+
+  <section class="painel">
+    <h2>Tema</h2>
+    <p>Clique para aplicar. A escolha fica salva neste navegador.</p>
+
+    <div class="temas" id="temas">
+      {% for t in [
+        ("hud", "HUD sci-fi", "Tela de drone: linhas finas, brilho ciano e mira."),
+        ("apple", "Apple", "Claro e limpo, vidro fosco e cantos arredondados."),
+        ("cyber", "Cyberpunk", "Rosa e ciano neon com amarelo de alerta."),
+        ("engenharia", "Engenharia", "Grafite e laranja, sóbrio como software de câmera."),
+        ("aero", "Aero anos 2000", "Céu azul, bolhas, vidro e botões brilhantes."),
+      ] %}
+      <button type="button" class="tema" data-escolher="{{ t[0] }}" aria-pressed="false">
+        <div class="amostra" data-tema="{{ t[0] }}" aria-hidden="true">
+          <span class="mini-marca">L.A.R.A</span>
+          <div class="mini-painel">
+            <div class="mini-fita">{% for _ in range(12) %}<i></i>{% endfor %}</div>
+            <span class="mini-botao">Testar</span>
+          </div>
+        </div>
+        <span class="tema-info">
+          <span><strong>{{ t[1] }}</strong><span>{{ t[2] }}</span></span>
+          <em>Em uso</em>
+        </span>
+      </button>
+      {% endfor %}
+    </div>
+  </section>
+</div>
+
+<script>
+const botoes = document.querySelectorAll("[data-escolher]");
+function marcar() {
+  const atual = document.documentElement.getAttribute("data-tema");
+  botoes.forEach(b => b.setAttribute("aria-pressed", b.dataset.escolher === atual));
+}
+botoes.forEach(b => b.onclick = () => {
+  document.documentElement.setAttribute("data-tema", b.dataset.escolher);
+  try { localStorage.setItem("lara_tema", b.dataset.escolher); } catch {}
+  marcar();
+});
+marcar();
+</script>
+</body>
+</html>

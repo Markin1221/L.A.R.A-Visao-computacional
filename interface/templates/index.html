@@ -1,71 +1,68 @@
 <!doctype html>
 <html lang="pt-BR">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>L.A.R.A · Treino</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="{{ url_for('static', filename='estilo.css') }}">
+{% include "_cabeca.html" %}
+<title>L.A.R.A | Treinar</title>
 </head>
 <body>
-<div class="wrap">
-  <header>
-    <div class="logo">L</div>
-    <div>
-      <h1>L.A.R.A · Visão Computacional</h1>
-      <p>Envie um vídeo, gere o dataset e treine o YOLO</p>
-    </div>
-    <nav><a href="/" class="ativo">Treinar</a><a href="/testar">Testar</a></nav>
-  </header>
+<div class="pagina">
+  {% set aba = "treinar" %}{% set subtitulo = "Ensine um produto novo a partir de um vídeo" %}
+  {% include "_topo.html" %}
 
-  <div class="grid">
-    <form class="card" id="form">
-      <h2>Novo vídeo</h2>
-      <div class="drop" id="drop">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M12 16V4m0 0-4 4m4-4 4 4M4 16v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>
+  <div class="grade">
+    <form class="painel" id="form">
+      <h2>Novo produto</h2>
+      <p>Grave o produto girando sobre um fundo liso e claro.</p>
+
+      <div class="solta" id="drop" tabindex="0" role="button" aria-label="Escolher vídeo">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M3 8V4h4M17 4h4v4M21 16v4h-4M7 20H3v-4"/><path d="M10 9.5v5l4-2.5z" fill="currentColor" stroke="none"/></svg>
         <strong id="nomeArquivo">Arraste o vídeo aqui</strong>
-        ou clique para escolher
+        <span>ou clique para escolher</span>
       </div>
       <input type="file" id="video" accept="video/*" hidden>
 
       <label for="produto">Nome do produto</label>
-      <input type="text" id="produto" placeholder="ex: coca cola 2l">
+      <input type="text" id="produto" placeholder="ex: coca cola 2l" autocomplete="off">
 
-      <label for="epocas">Épocas</label>
+      <label for="epocas">Épocas de treino</label>
       <input type="number" id="epocas" value="50" min="1">
 
-      <div class="checks">
-        <label><input type="checkbox" id="fundo"> Vídeo sem produto</label>
-        <label><input type="checkbox" id="preview" checked> Salvar preview</label>
+      <div class="escolhas">
+        <label><input type="checkbox" id="fundo"> O vídeo mostra só o fundo, sem produto</label>
+        <label><input type="checkbox" id="preview" checked> Salvar imagens com a caixa para conferir</label>
       </div>
 
       <button type="submit" id="botao">Enviar e treinar</button>
-      <div class="msg" id="msg"></div>
+      <div class="erro" id="msg" role="alert"></div>
     </form>
 
-    <section class="card">
-      <div class="status-top">
-        <h2 style="margin:0">Status</h2>
-        <span class="pill" id="pill"><i></i><span id="fase">parado</span></span>
+    <div class="coluna">
+    <section class="painel" aria-live="polite">
+      <div class="painel-topo">
+        <h2>Treino</h2>
+        <span class="estado" id="pill"><i></i><span id="fase">parado</span></span>
       </div>
-      <div class="stats">
-        <div class="stat"><span>Época</span><b id="epoca">–</b></div>
-        <div class="stat"><span>Tempo decorrido</span><b id="decorrido">–</b></div>
-        <div class="stat"><span>Restante (aprox.)</span><b id="eta">–</b></div>
-      </div>
-      <div class="barra" id="barra"><div id="progresso"></div></div>
-      <p class="nota">A estimativa usa a média das épocas já concluídas. O treino pode acabar antes se o modelo parar de melhorar.</p>
-    </section>
-  </div>
 
-  <section class="card log-card">
-    <div class="log-top">
-      <h2>Logs</h2>
-      <label><input type="checkbox" id="rolar" checked> Rolar automaticamente</label>
+      <div class="numeros">
+        <div><span>Época</span><b id="epoca">–</b></div>
+        <div><span>Decorrido</span><b id="decorrido">–</b></div>
+        <div><span>Falta, aprox.</span><b id="eta">–</b></div>
+      </div>
+
+      <div class="fita" id="fita"></div>
+      <div class="legenda-fita"><span>Cada célula é uma época</span><span id="legendaFita"></span></div>
+      <p class="nota">A estimativa usa a média das épocas já concluídas. O treino pode parar antes se o modelo deixar de melhorar.</p>
+    </section>
+
+  <section class="painel registro">
+    <div class="painel-topo">
+      <h2>Registro do treino</h2>
+      <div class="escolhas"><label><input type="checkbox" id="rolar" checked> Acompanhar o fim</label></div>
     </div>
-    <pre id="log">Aguardando envio…</pre>
+    <pre id="log">Nada rodando. Envie um vídeo para começar.</pre>
   </section>
+    </div>
+  </div>
 </div>
 
 <script>
@@ -76,9 +73,10 @@ let arquivo = null, timer = null;
 function escolher(f) {
   if (!f) return;
   arquivo = f;
-  $("nomeArquivo").textContent = `${f.name} · ${(f.size / 1048576).toFixed(1)} MB`;
+  $("nomeArquivo").textContent = `${f.name} (${(f.size / 1048576).toFixed(1)} MB)`;
 }
 drop.onclick = () => inputVideo.click();
+drop.onkeydown = e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); inputVideo.click(); } };
 inputVideo.onchange = () => escolher(inputVideo.files[0]);
 drop.ondragover = e => { e.preventDefault(); drop.classList.add("sobre"); };
 drop.ondragleave = () => drop.classList.remove("sobre");
@@ -92,10 +90,26 @@ function tempo(s) {
   return h ? `${h}h ${String(m).padStart(2, "0")}m` : `${m}m ${String(seg).padStart(2, "0")}s`;
 }
 
+// fita de épocas
+const fita = $("fita");
+function desenharFita(n, feitas, atual, sobra) {
+  if (fita.children.length !== n) {
+    fita.style.setProperty("--n", n);
+    fita.replaceChildren(...Array.from({ length: n }, () => document.createElement("i")));
+  }
+  [...fita.children].forEach((c, i) => {
+    c.className = i < feitas ? "feita" : i === atual ? "atual" : (sobra && i >= feitas) ? "sobra" : "";
+  });
+}
+const epocasPedidas = () => Math.min(300, Math.max(1, parseInt($("epocas").value) || 50));
+$("epocas").oninput = () => { if (!timer) desenharFita(epocasPedidas(), 0, -1, false); };
+desenharFita(epocasPedidas(), 0, -1, false);
+
 $("form").onsubmit = async e => {
   e.preventDefault();
   $("msg").textContent = "";
-  if (!arquivo) { $("msg").textContent = "Escolha um vídeo."; return; }
+  if (!arquivo) { $("msg").textContent = "Escolha um vídeo para enviar."; return; }
+  if (!$("fundo").checked && !$("produto").value.trim()) { $("msg").textContent = "Dê um nome ao produto."; return; }
 
   const dados = new FormData();
   dados.append("video", arquivo);
@@ -109,7 +123,7 @@ $("form").onsubmit = async e => {
   try {
     const r = await fetch("/enviar", { method: "POST", body: dados });
     const j = await r.json();
-    if (!r.ok) throw new Error(j.erro || "erro ao enviar");
+    if (!r.ok) throw new Error(j.erro || "Não deu para enviar o vídeo.");
     iniciarPolling();
   } catch (err) {
     $("msg").textContent = err.message;
@@ -129,22 +143,28 @@ async function atualizar() {
   try { s = await (await fetch("/status")).json(); } catch { return; }
 
   $("fase").textContent = s.fase;
-  $("pill").className = "pill " + (s.rodando ? "ativo"
+  $("pill").className = "estado " + (s.rodando ? "ativo"
     : s.fase === "concluido" ? "ok"
     : s.fase === "erro" ? "erro"
     : s.fase === "dataset insuficiente" ? "aviso" : "");
 
-  $("epoca").textContent = s.total ? `${s.epoca}/${s.total}` : "–";
+  $("epoca").textContent = s.total ? `${s.epoca} de ${s.total}` : "–";
   $("decorrido").textContent = s.decorrido ? tempo(s.decorrido) : "–";
-  $("eta").textContent = s.rodando ? (s.eta != null ? tempo(s.eta) : "calculando…") : (s.fase === "concluido" ? "0m 00s" : "–");
+  $("eta").textContent = s.rodando ? (s.eta != null ? tempo(s.eta) : "calculando") : (s.fase === "concluido" ? "pronto" : "–");
 
-  const barra = $("barra");
   if (s.rodando && !s.total) {
-    barra.classList.add("indeterminada");
+    fita.classList.add("varrendo");
+    desenharFita(epocasPedidas(), 0, -1, false);
+    $("legendaFita").textContent = "preparando as imagens";
+  } else if (s.total) {
+    fita.classList.remove("varrendo");
+    const terminou = !s.rodando && s.fase === "concluido";
+    const feitas = terminou ? s.epoca : s.epoca - 1;
+    desenharFita(s.total, feitas, s.rodando ? s.epoca - 1 : -1, terminou && s.epoca < s.total);
+    $("legendaFita").textContent = terminou && s.epoca < s.total ? `parou cedo na época ${s.epoca}` : `${feitas} de ${s.total}`;
   } else {
-    barra.classList.remove("indeterminada");
-    const pct = s.fase === "concluido" ? 100 : s.total ? (s.epoca - 1) / s.total * 100 : 0;
-    $("progresso").style.width = Math.max(0, pct) + "%";
+    fita.classList.remove("varrendo");
+    $("legendaFita").textContent = "";
   }
 
   if (s.linhas.length) {

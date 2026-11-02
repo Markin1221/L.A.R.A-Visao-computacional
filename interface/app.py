@@ -32,6 +32,7 @@ import base64
 import re
 import threading
 import time
+import urllib.request
 from datetime import datetime
 
 import cv2 as cv
@@ -205,20 +206,31 @@ def status():
 # ---------------------------------------------------------------- teste
 
 trava_modelo = threading.Lock()
-cache_modelo = {"mtime": None, "modelo": None}
+cache_modelo = {}   # caminho -> (mtime, modelo)
+
+# "treinado" = o nosso; "coco" = YOLO pre-treinado (80 classes: pessoa, garrafa, celular...)
+MODELOS = {
+    "treinado": MODELO,
+    "coco": os.path.join(RAIZ, "testes-yolo", "yolo11n.pt"),
+}
+
+
+def caminhoModelo():
+    return MODELOS.get(request.values.get("modelo", "treinado"), MODELO)
 
 
 def carregarModelo():
     """Carrega o melhor.pt uma vez e recarrega sozinho se ele for re-treinado."""
-    if not os.path.exists(MODELO):
+    caminho = caminhoModelo()
+    if not os.path.exists(caminho):
         return None
-    mtime = os.path.getmtime(MODELO)
+    mtime = os.path.getmtime(caminho)
     with trava_modelo:
-        if cache_modelo["mtime"] != mtime:
+        item = cache_modelo.get(caminho)
+        if item is None or item[0] != mtime:
             from ultralytics import YOLO
-            cache_modelo["modelo"] = YOLO(MODELO)
-            cache_modelo["mtime"] = mtime
-        return cache_modelo["modelo"]
+            cache_modelo[caminho] = (mtime, YOLO(caminho))
+        return cache_modelo[caminho][1]
 
 
 def lerConf():
@@ -237,13 +249,20 @@ def testar():
     return render_template("testar.html")
 
 
+@app.route("/config")
+def config():
+    return render_template("config.html")
+
+
 @app.get("/modelo")
 def modelo_info():
     modelo = carregarModelo()
     if modelo is None:
         return jsonify(existe=False)
-    atualizado = datetime.fromtimestamp(os.path.getmtime(MODELO)).strftime("%d/%m/%Y %H:%M")
-    return jsonify(existe=True, atualizado=atualizado, classes=list(modelo.names.values()))
+    caminho = caminhoModelo()
+    atualizado = datetime.fromtimestamp(os.path.getmtime(caminho)).strftime("%d/%m/%Y %H:%M")
+    arquivo = os.path.relpath(caminho, RAIZ).replace(os.sep, "/")
+    return jsonify(existe=True, arquivo=arquivo, atualizado=atualizado, classes=list(modelo.names.values()))
 
 
 @app.post("/testar/imagem")
@@ -264,7 +283,7 @@ def testar_imagem():
     tempo_ms = (time.time() - inicio) * 1000
 
     deteccoes = [
-        {"classe": resultado.names[int(c)], "conf": float(p)}
+        {"id": int(c), "classe": resultado.names[int(c)], "conf": float(p)}
         for c, p in zip(resultado.boxes.cls.tolist(), resultado.boxes.conf.tolist())
     ]
     deteccoes.sort(key=lambda d: d["conf"], reverse=True)
@@ -286,6 +305,82 @@ def testar_video():
     return jsonify(id=nome)
 
 
+class LeitorMJPEG:
+    """
+    Le o stream MJPEG da ESP32-CAM direto pelo HTTP (sem depender do FFmpeg do OpenCV).
+    Fica lendo numa thread e guarda so o frame mais novo, pra ter pouco atraso.
+    Tem a mesma "cara" do cv.VideoCapture (read/get/release).
+    """
+
+    def __init__(self, url, timeout=5):
+        sem_proxy = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        self.resposta = sem_proxy.open(url, timeout=timeout)
+        self.frame = None
+        self.novo = threading.Event()
+        self.ativo = True
+        threading.Thread(target=self._ler, daemon=True).start()
+
+    def _ler(self):
+        buffer = b""
+        try:
+            while self.ativo:
+                pedaco = self.resposta.read1(65536)
+                if not pedaco:
+                    break
+                buffer += pedaco
+                fim = buffer.rfind(b"\xff\xd9")           # fim do ultimo JPEG completo
+                if fim == -1:
+                    if len(buffer) > 4_000_000:
+                        buffer = b""
+                    continue
+                inicio = buffer.rfind(b"\xff\xd8", 0, fim)  # inicio desse JPEG
+                if inicio != -1:
+                    img = cv.imdecode(np.frombuffer(buffer[inicio:fim + 2], np.uint8), cv.IMREAD_COLOR)
+                    if img is not None:
+                        self.frame = img
+                        self.novo.set()
+                buffer = buffer[fim + 2:]
+        except Exception:
+            pass
+        finally:
+            self.ativo = False
+            self.novo.set()
+
+    def read(self):
+        if not self.novo.wait(timeout=10):
+            return False, None
+        self.novo.clear()
+        if not self.ativo or self.frame is None:
+            return False, None
+        return True, self.frame
+
+    def get(self, _prop):
+        return 0
+
+    def release(self):
+        self.ativo = False
+        try:
+            self.resposta.close()
+        except Exception:
+            pass
+
+
+@app.get("/checar_esp")
+def checar_esp():
+    """Testa a conexao com a ESP32 antes de abrir o stream, pra mostrar um erro claro."""
+    url = request.args.get("url", "")
+    if not url.startswith(("http://", "https://")):
+        return jsonify(ok=False, erro="endereco invalido")
+    try:
+        leitor = LeitorMJPEG(url, timeout=4)
+    except Exception as e:
+        return jsonify(ok=False, erro=f"a ESP32 nao respondeu ({e})")
+    ok, _ = leitor.read()
+    leitor.release()
+    time.sleep(0.5)  # da tempo da ESP32 liberar a conexao (ela so aceita um stream por vez)
+    return jsonify(ok=ok, erro=None if ok else "conectou, mas nao chegou nenhuma imagem")
+
+
 @app.get("/stream")
 def stream():
     """Stream MJPEG com as deteccoes desenhadas, frame a frame (video enviado ou webcam)."""
@@ -297,15 +392,25 @@ def stream():
     conf = lerConf()
     if fonte == "webcam":
         origem, ao_vivo = 0, True
+    elif fonte.startswith(("http://", "https://")):
+        origem, ao_vivo = fonte, True          # ESP32-CAM (stream MJPEG pela rede)
     else:
         origem = os.path.join(PASTA_TESTES, os.path.basename(fonte))
         ao_vivo = False
         if not os.path.exists(origem):
             return "video nao encontrado", 404
 
-    captura = cv.VideoCapture(origem)
-    if not captura.isOpened():
-        return "nao deu pra abrir a fonte", 500
+    if isinstance(origem, str) and origem.startswith(("http://", "https://")):
+        try:
+            captura = LeitorMJPEG(origem)
+        except Exception as e:
+            return f"nao deu pra conectar na ESP32: {e}", 502
+    else:
+        captura = cv.VideoCapture(origem)
+        if not captura.isOpened():
+            return "nao deu pra abrir a fonte", 500
+        if ao_vivo:
+            captura.set(cv.CAP_PROP_BUFFERSIZE, 1)  # menos atraso: pega sempre o frame mais novo
 
     def gerar():
         fps_video = captura.get(cv.CAP_PROP_FPS) or 30
