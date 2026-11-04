@@ -209,6 +209,9 @@ def main():
     parser.add_argument("--preview", action="store_true", help="salva copias com o bbox desenhado em dataset/preview")
     parser.add_argument("--sem-treino", action="store_true", help="so importa o video, sem treinar o modelo depois")
     parser.add_argument("--epocas", type=int, default=50, help="epocas do treino automatico (padrao 50)")
+    parser.add_argument("--modelo", choices=("yolo", "rfdetr", "ambos"), default="yolo",
+                        help="qual modelo treinar depois de importar (padrao: yolo)")
+    parser.add_argument("--tamanho-rf", default="nano", help="tamanho do RF-DETR (nano, small...)")
     args = parser.parse_args()
 
     if not args.fundo and not args.produto:
@@ -216,9 +219,18 @@ def main():
 
     popularDataset(args.video, args.produto, args.fundo, args.intervalo, args.preview)
 
-    if not args.sem_treino:
+    if args.sem_treino:
+        return
+    if args.modelo in ("yolo", "ambos"):
         from treinar import treinar  # mesmo diretorio deste script
         treinar(epocas=args.epocas)
+    if args.modelo in ("rfdetr", "ambos"):
+        import subprocess
+        import sys
+        script = os.path.join(RAIZ, "rf-detr", "treinar.py")
+        codigo = subprocess.call([sys.executable, "-u", script, "--epocas", str(args.epocas), "--tamanho", args.tamanho_rf])
+        if codigo:
+            raise SystemExit(codigo)
 
 
 if __name__ == "__main__":

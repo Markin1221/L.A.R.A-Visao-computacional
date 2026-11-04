@@ -1,5 +1,9 @@
 # PyTorch com CUDA: instale antes, pelo index oficial (ver README.md)
-ultralytics==8.4.158
-opencv-python==5.0.0.93
-numpy==2.5.3
+ultralytics
+opencv-python
+numpy
 flask
+# RF-DETR (opcao de modelo no treino e no teste); [train] traz o que o treino precisa
+rfdetr[train]
+# gestos/ (desenho, mouse por mao, cabeca e olhar)
+mediapipe

@@ -1,0 +1,8 @@
+# Experimento RF-DETR (venv separado: rf-detr\venv)
+# PyTorch com CUDA: instale antes, pelo index oficial (ver rf-detr/README.md)
+rfdetr
+opencv-python
+# so pro comparar.py (roda o YOLO do projeto principal nas mesmas imagens)
+ultralytics
+# so pro gestos/desenhar.py (acompanha os dedos)
+mediapipe

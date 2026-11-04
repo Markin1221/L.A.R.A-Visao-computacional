@@ -25,17 +25,28 @@
         <span>ou clique para escolher</span>
       </div>
       <input type="file" id="arquivo" accept="image/*" hidden>
-      <p class="nota oculto" id="notaWebcam">Usa a webcam ligada a este computador.</p>
+      <div class="oculto" id="notaWebcam">
+        <label for="numCamera" style="margin-top:0">Número da câmera</label>
+        <input type="number" id="numCamera" value="0" min="0" max="9">
+        <p class="nota">0 costuma ser a webcam do PC. Celular (DroidCam, Iriun) costuma ser 1 ou 2: rode <b>python listar_cameras.py</b> pra ver.</p>
+      </div>
       <div class="oculto" id="campoEsp">
         <label for="urlEsp" style="margin-top:0">Endereço da câmera</label>
-        <input type="text" id="urlEsp" placeholder="192.168.1.6" autocomplete="off">
+        <input type="text" id="urlEsp" placeholder="192.168.1.6  ou  http://IP-do-celular:4747/video" autocomplete="off">
         <p class="nota">Feche outras abas que mostram a câmera. A ESP32 só envia vídeo para um lugar por vez.</p>
       </div>
 
       <label for="modelo">Modelo</label>
       <select id="modelo">
-        <option value="treinado">Treinado por você</option>
-        <option value="coco">YOLO pré-treinado (80 objetos comuns)</option>
+        <optgroup label="YOLO">
+          <option value="treinado">YOLO treinado por você</option>
+          <option value="coco">YOLO pré-treinado (80 objetos comuns)</option>
+        </optgroup>
+        <optgroup label="RF-DETR">
+          <option value="rfdetr">RF-DETR treinado por você</option>
+          <option value="rfdetr-coco">RF-DETR pré-treinado (80 objetos comuns)</option>
+          <option value="rfdetr-seg">RF-DETR pinta o objeto (80 objetos comuns)</option>
+        </optgroup>
       </select>
 
       <label class="faixa" for="conf">Confiança mínima <output id="confValor">0.25</output></label>
@@ -156,14 +167,17 @@ $("botao").onclick = async () => {
   const conf = $("conf").value;
 
   if (modo === "webcam") {
-    iniciarStream(`/stream?fonte=webcam&conf=${conf}`);
+    const n = Math.max(0, parseInt($("numCamera").value) || 0);
+    try { localStorage.setItem("lara_num_camera", n); } catch {}
+    iniciarStream(`/stream?fonte=webcam:${n}&conf=${conf}`);
     return;
   }
   if (modo === "esp") {
     let url = $("urlEsp").value.trim();
     if (!url) { $("msg").textContent = "Digite o endereço que a ESP32 mostra no Monitor Serial."; return; }
     if (!/^https?:\/\//.test(url)) url = "http://" + url;
-    if (!/\/stream\/?$/.test(url)) url = url.replace(/\/$/, "") + "/stream";
+    // so o IP (ESP32): completa com /stream. Endereco com caminho (ex: celular .../video): usa como esta
+    if (!/^https?:\/\/[^/]+\/./.test(url)) url = url.replace(/\/$/, "") + "/stream";
     $("urlEsp").value = url;
     try { localStorage.setItem("lara_url_esp", url); } catch {}
     $("botao").disabled = true;
@@ -220,27 +234,36 @@ $("saida").onerror = () => {
 };
 
 try { $("urlEsp").value = localStorage.getItem("lara_url_esp") || ""; } catch {}
+try { $("numCamera").value = localStorage.getItem("lara_num_camera") || "0"; } catch {}
 
 function carregarInfo() {
   $("infoModelo").textContent = "Carregando…";
   fetch(`/modelo?modelo=${$("modelo").value}`).then(r => r.json()).then(m => {
     if (!m.existe) {
-      $("infoModelo").innerHTML = $("modelo").value === "coco"
-        ? "Arquivo testes-yolo/yolo11n.pt não encontrado."
-        : "Nenhum modelo treinado ainda. Treine um produto na aba <b>Treinar</b>.";
+      const escolhido = $("modelo").value;
+      $("infoModelo").innerHTML = m.erro ? m.erro
+        : escolhido === "coco" ? "Arquivo testes-yolo/yolo11n.pt não encontrado."
+        : `Nenhum modelo treinado ainda${m.arquivo ? ` (${m.arquivo})` : ""}. Treine na aba <b>Treinar</b>` +
+          (escolhido === "rfdetr" ? " escolhendo RF-DETR." : ".");
       $("botao").disabled = true;
       return;
     }
     const cls = m.classes.length > 10
       ? m.classes.slice(0, 10).join(", ") + ` e mais ${m.classes.length - 10}`
       : m.classes.join(", ");
-    $("infoModelo").innerHTML = `<b>${m.arquivo}</b><br>Atualizado em ${m.atualizado}<br>Reconhece: <b>${cls}</b>`;
+    $("infoModelo").innerHTML = `<b>${m.arquivo}</b><br>` + (m.atualizado ? `Atualizado em ${m.atualizado}<br>` : "") +
+      `Reconhece: <b>${cls}</b>`;
     $("botao").disabled = false;
   }).catch(() => {
     $("infoModelo").textContent = "Não deu para carregar o modelo. Veja o terminal do Flask.";
   });
 }
-$("modelo").onchange = () => { pararStream(); carregarInfo(); };
+$("modelo").onchange = () => {
+  pararStream();
+  try { localStorage.setItem("lara_modelo_teste", $("modelo").value); } catch {}
+  carregarInfo();
+};
+try { const salvo = localStorage.getItem("lara_modelo_teste"); if (salvo) $("modelo").value = salvo; } catch {}
 carregarInfo();
 </script>
 </body>

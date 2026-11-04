@@ -227,3 +227,13 @@ dataset/labels/
 dataset/preview/
 modelos/
 uploads/
+rf-detr/dataset/
+rf-detr/capturas/
+rf-detr/resultado_comparacao.txt
+*.pth
+*.ckpt
+*.task
+gestos/capturas/
+gestos/calibracao_olho.json
+gestos/calibracao_cabeca.json
+gestos/config_mouse.json

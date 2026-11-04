@@ -24,6 +24,20 @@
       <label for="produto">Nome do produto</label>
       <input type="text" id="produto" placeholder="ex: coca cola 2l" autocomplete="off">
 
+      <label for="modeloTreino">Modelo</label>
+      <select id="modeloTreino">
+        <option value="yolo">YOLO: rápido</option>
+        <option value="rfdetr">RF-DETR: mais preciso, 5 a 10x mais lento</option>
+        <option value="ambos">Os dois, um depois do outro</option>
+      </select>
+      <div id="campoTamanho" class="oculto">
+        <label for="tamanhoRf">Tamanho do RF-DETR</label>
+        <select id="tamanhoRf">
+          <option value="nano">Nano: cabe na GTX 1650</option>
+          <option value="small">Small: mais preciso, precisa de mais memória</option>
+        </select>
+      </div>
+
       <label for="epocas">Épocas de treino</label>
       <input type="number" id="epocas" value="50" min="1">
 
@@ -33,6 +47,7 @@
       </div>
 
       <button type="submit" id="botao">Enviar e treinar</button>
+      <button type="button" id="retreinar" class="secundario">Só treinar, sem vídeo novo</button>
       <div class="erro" id="msg" role="alert"></div>
     </form>
 
@@ -42,6 +57,7 @@
         <h2>Treino</h2>
         <span class="estado" id="pill"><i></i><span id="fase">parado</span></span>
       </div>
+      <p class="nota" id="etapa" style="margin:-6px 0 14px"></p>
 
       <div class="numeros">
         <div><span>Época</span><b id="epoca">–</b></div>
@@ -52,6 +68,7 @@
       <div class="fita" id="fita"></div>
       <div class="legenda-fita"><span>Cada célula é uma época</span><span id="legendaFita"></span></div>
       <p class="nota">A estimativa usa a média das épocas já concluídas. O treino pode parar antes se o modelo deixar de melhorar.</p>
+      <div class="etiquetas" id="resumo"></div>
     </section>
 
   <section class="painel registro">
@@ -82,6 +99,17 @@ drop.ondragover = e => { e.preventDefault(); drop.classList.add("sobre"); };
 drop.ondragleave = () => drop.classList.remove("sobre");
 drop.ondrop = e => { e.preventDefault(); drop.classList.remove("sobre"); escolher(e.dataTransfer.files[0]); };
 $("fundo").onchange = () => { $("produto").disabled = $("fundo").checked; };
+const mostrarTamanho = () => $("campoTamanho").classList.toggle("oculto", $("modeloTreino").value === "yolo");
+$("modeloTreino").onchange = () => { mostrarTamanho(); try { localStorage.setItem("lara_modelo_treino", $("modeloTreino").value); } catch {} };
+try { const salvo = localStorage.getItem("lara_modelo_treino"); if (salvo) $("modeloTreino").value = salvo; } catch {}
+mostrarTamanho();
+
+function opcoesTreino(dados) {
+  dados.append("modelo", $("modeloTreino").value);
+  dados.append("tamanho_rf", $("tamanhoRf").value);
+  dados.append("epocas", $("epocas").value);
+  return dados;
+}
 
 function tempo(s) {
   if (s == null) return "–";
@@ -111,10 +139,9 @@ $("form").onsubmit = async e => {
   if (!arquivo) { $("msg").textContent = "Escolha um vídeo para enviar."; return; }
   if (!$("fundo").checked && !$("produto").value.trim()) { $("msg").textContent = "Dê um nome ao produto."; return; }
 
-  const dados = new FormData();
+  const dados = opcoesTreino(new FormData());
   dados.append("video", arquivo);
   dados.append("produto", $("produto").value);
-  dados.append("epocas", $("epocas").value);
   dados.append("fundo", $("fundo").checked);
   dados.append("preview", $("preview").checked);
 
@@ -130,6 +157,20 @@ $("form").onsubmit = async e => {
     $("botao").disabled = false;
   }
   $("botao").textContent = "Enviar e treinar";
+};
+
+$("retreinar").onclick = async () => {
+  $("msg").textContent = "";
+  $("retreinar").disabled = $("botao").disabled = true;
+  try {
+    const r = await fetch("/treinar", { method: "POST", body: opcoesTreino(new FormData()) });
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.erro || "Não deu para começar o treino.");
+    iniciarPolling();
+  } catch (err) {
+    $("msg").textContent = err.message;
+    $("retreinar").disabled = $("botao").disabled = false;
+  }
 };
 
 function iniciarPolling() {
@@ -148,6 +189,9 @@ async function atualizar() {
     : s.fase === "erro" ? "erro"
     : s.fase === "dataset insuficiente" ? "aviso" : "");
 
+  $("etapa").textContent = s.etapas > 1 ? `Etapa ${s.etapa} de ${s.etapas}: ${s.nome_etapa}` : (s.nome_etapa ? s.nome_etapa : "");
+  $("resumo").innerHTML = (s.resumo || []).filter(r => r.nome !== "importar video").map(r =>
+    `<span class="etiqueta" style="--cor:${r.ok ? "var(--ok)" : "var(--perigo)"};--cor-texto:#fff">${r.nome}<b>${r.ok ? "pronto em " : "falhou em "}${tempo(r.segundos)}</b></span>`).join("");
   $("epoca").textContent = s.total ? `${s.epoca} de ${s.total}` : "–";
   $("decorrido").textContent = s.decorrido ? tempo(s.decorrido) : "–";
   $("eta").textContent = s.rodando ? (s.eta != null ? tempo(s.eta) : "calculando") : (s.fase === "concluido" ? "pronto" : "–");
@@ -173,7 +217,7 @@ async function atualizar() {
     if ($("rolar").checked) log.scrollTop = log.scrollHeight;
   }
 
-  $("botao").disabled = s.rodando;
+  $("botao").disabled = $("retreinar").disabled = s.rodando;
   if (!s.rodando && timer) { clearInterval(timer); timer = null; }
 }
 

@@ -1,7 +1,9 @@
 """
 Interface web simples pra testar o projeto:
-  - aba Treinar: envia um video, importa pro dataset e treina, com logs e estimativa de tempo
-  - aba Testar: roda o modelos/melhor.pt numa imagem, num video ou na webcam
+  - aba Treinar: envia um video, importa pro dataset e treina YOLO, RF-DETR ou os dois
+  - aba Testar: roda o modelo escolhido numa imagem, num video, na webcam ou na ESP32
+
+Pro RF-DETR, instale no mesmo venv:  venv\\Scripts\\pip install "rfdetr[train]"
 
 Uso:
     venv\\Scripts\\pip install flask
@@ -29,8 +31,10 @@ if os.path.normcase(os.path.abspath(sys.executable)) != os.path.normcase(os.path
     ))
 
 import base64
+import importlib.util
 import re
 import threading
+import types
 import time
 import urllib.request
 from datetime import datetime
@@ -40,6 +44,17 @@ import numpy as np
 from flask import Flask, Response, jsonify, render_template, request
 
 SCRIPT = os.path.join(RAIZ, "testes-b-box", "popular_dataset.py")
+TREINO_YOLO = os.path.join(RAIZ, "testes-b-box", "treinar.py")
+PASTA_RF = os.path.join(RAIZ, "rf-detr")
+TREINO_RF = os.path.join(PASTA_RF, "treinar.py")
+MODELO_RF = os.path.join(PASTA_RF, "modelos", "melhor.pth")
+
+# o RF-DETR treina com o python deste venv se ele tiver o rfdetr; senao, com o venv do rf-detr/
+_rf_venv = next((p for p in (os.path.join(PASTA_RF, "venv", "Scripts", "python.exe"),
+                             os.path.join(PASTA_RF, "venv", "bin", "python")) if os.path.exists(p)), None)
+RF_AQUI = importlib.util.find_spec("rfdetr") is not None
+PYTHON_RF = PYTHON if RF_AQUI or not _rf_venv else _rf_venv
+NOMES_MODELO = {"yolo": "YOLO", "rfdetr": "RF-DETR"}
 PASTA_UPLOADS = os.path.join(RAIZ, "uploads")
 PASTA_TESTES = os.path.join(PASTA_UPLOADS, "testes")
 MODELO = os.path.join(RAIZ, "modelos", "melhor.pt")
@@ -63,7 +78,12 @@ def resetarEstado():
     estado.update(
         rodando=False, fase="parado", codigo=None, linhas=[],
         epoca=0, total=0, inicio=None, inicio_epoca=None, duracoes=[],
+        etapa=0, etapas=0, nome_etapa="", resumo=[],
     )
+
+
+def zerarEpocas():
+    estado.update(epoca=0, total=0, inicio_epoca=None, duracoes=[])
 
 
 resetarEstado()
@@ -87,9 +107,7 @@ def adicionarLinha(linha):
             linhas.append(linha)
             del linhas[:-MAX_LINHAS]
 
-        if "imagens salvas" in linha:
-            estado["fase"] = "preparando treino"
-        elif "dataset insuficiente" in linha:
+        if "dataset insuficiente" in linha:
             estado["fase"] = "dataset insuficiente"
 
         m = LINHA_EPOCA.match(linha)
@@ -101,10 +119,37 @@ def adicionarLinha(linha):
                     estado["duracoes"].append(agora - estado["inicio_epoca"])
                 estado["inicio_epoca"] = agora
                 estado["epoca"], estado["total"] = epoca, total
-            estado["fase"] = "treinando"
+            estado["fase"] = f"treinando {estado['nome_etapa']}"
 
 
-def executar(comando):
+def executar(etapas):
+    """Roda as etapas em sequencia (importar video, treinar YOLO, treinar RF-DETR); para no primeiro erro."""
+    with trava:
+        estado["etapas"] = len(etapas)
+    codigo = 0
+    for i, (nome, fase, comando) in enumerate(etapas, 1):
+        with trava:
+            zerarEpocas()
+            estado.update(etapa=i, nome_etapa=nome, fase=fase)
+            estado["linhas"].append(f"===== etapa {i} de {len(etapas)}: {nome} =====")
+        inicio = time.time()
+        codigo = rodarComando(comando)
+        with trava:
+            estado["resumo"].append({"nome": nome, "segundos": time.time() - inicio, "ok": codigo == 0})
+            insuficiente = estado["fase"] == "dataset insuficiente"
+        if codigo != 0 or insuficiente:
+            break
+
+    with trava:
+        estado["rodando"] = False
+        estado["codigo"] = codigo
+        if codigo != 0:
+            estado["fase"] = "erro"
+        elif estado["fase"] != "dataset insuficiente":
+            estado["fase"] = "concluido"
+
+
+def rodarComando(comando):
     env = dict(os.environ, PYTHONUNBUFFERED="1", PYTHONIOENCODING="utf-8")
     proc = subprocess.Popen(
         comando, cwd=RAIZ, env=env,
@@ -123,15 +168,37 @@ def executar(comando):
             adicionarLinha(p.decode("utf-8", errors="replace"))
     if buffer:
         adicionarLinha(buffer.decode("utf-8", errors="replace"))
+    return proc.wait()
 
-    codigo = proc.wait()
+
+def etapasDeTreino(modelo, epocas, tamanho_rf):
+    etapas = []
+    if modelo in ("yolo", "ambos"):
+        etapas.append(("YOLO", "preparando YOLO", [PYTHON, "-u", TREINO_YOLO, "--epocas", epocas]))
+    if modelo in ("rfdetr", "ambos"):
+        etapas.append(("RF-DETR", "preparando RF-DETR",
+                       [PYTHON_RF, "-u", TREINO_RF, "--epocas", epocas, "--tamanho", tamanho_rf]))
+    return etapas
+
+
+def lerOpcoesTreino():
+    modelo = request.form.get("modelo") or "yolo"
+    epocas = request.form.get("epocas") or "50"
+    tamanho_rf = request.form.get("tamanho_rf") or "nano"
+    if modelo not in ("yolo", "rfdetr", "ambos"):
+        return None, "modelo invalido"
+    if not epocas.isdigit() or int(epocas) < 1:
+        return None, "epocas invalidas"
+    if tamanho_rf not in ("nano", "small", "medium", "large"):
+        return None, "tamanho do RF-DETR invalido"
+    return (modelo, epocas, tamanho_rf), None
+
+
+def comecar(etapas, fase):
     with trava:
-        estado["rodando"] = False
-        estado["codigo"] = codigo
-        if codigo != 0:
-            estado["fase"] = "erro"
-        elif estado["fase"] != "dataset insuficiente":
-            estado["fase"] = "concluido"
+        resetarEstado()
+        estado.update(rodando=True, fase=fase, inicio=time.time())
+    threading.Thread(target=executar, args=(etapas,), daemon=True).start()
 
 
 def calcularEta():
@@ -157,33 +224,42 @@ def enviar():
     produto = (request.form.get("produto") or "").strip()
     fundo = request.form.get("fundo") == "true"
     preview = request.form.get("preview") == "true"
-    epocas = request.form.get("epocas") or "50"
+    opcoes, erro = lerOpcoesTreino()
 
     if not video or not video.filename:
         return jsonify(erro="envie um video"), 400
     if not fundo and not produto:
         return jsonify(erro="informe o nome do produto"), 400
-    if not epocas.isdigit() or int(epocas) < 1:
-        return jsonify(erro="epocas invalidas"), 400
+    if erro:
+        return jsonify(erro=erro), 400
 
     os.makedirs(PASTA_UPLOADS, exist_ok=True)
     nome = f"{int(time.time())}_{os.path.basename(video.filename)}"
     caminho = os.path.join(PASTA_UPLOADS, nome)
     video.save(caminho)
 
-    comando = [PYTHON, "-u", SCRIPT, caminho]
-    if fundo:
-        comando.append("--fundo")
-    else:
-        comando.append(produto)
-    comando += ["--epocas", epocas]
+    comando = [PYTHON, "-u", SCRIPT, caminho, "--fundo" if fundo else produto, "--sem-treino"]
     if preview:
         comando.append("--preview")
 
-    with trava:
-        resetarEstado()
-        estado.update(rodando=True, fase="extraindo frames", inicio=time.time())
-    threading.Thread(target=executar, args=(comando,), daemon=True).start()
+    etapas = [("importar video", "extraindo frames", comando)] + etapasDeTreino(*opcoes)
+    comecar(etapas, "extraindo frames")
+    return jsonify(ok=True)
+
+
+@app.post("/treinar")
+def treinar_de_novo():
+    """Treina com o dataset que ja existe, sem importar video novo."""
+    if estado["rodando"]:
+        return jsonify(erro="ja tem um processo rodando"), 409
+    opcoes, erro = lerOpcoesTreino()
+    if erro:
+        return jsonify(erro=erro), 400
+    pasta = os.path.join(RAIZ, "dataset", "images", "train")
+    if not os.path.isdir(pasta) or not os.listdir(pasta):
+        return jsonify(erro="o dataset esta vazio: envie um video primeiro"), 400
+    etapas = etapasDeTreino(*opcoes)
+    comecar(etapas, etapas[0][1])
     return jsonify(ok=True)
 
 
@@ -199,6 +275,10 @@ def status():
             total=estado["total"],
             eta=calcularEta() if estado["rodando"] else None,
             decorrido=decorrido,
+            etapa=estado["etapa"],
+            etapas=estado["etapas"],
+            nome_etapa=estado["nome_etapa"],
+            resumo=estado["resumo"],
             linhas=estado["linhas"][-400:],
         )
 
@@ -206,31 +286,78 @@ def status():
 # ---------------------------------------------------------------- teste
 
 trava_modelo = threading.Lock()
-cache_modelo = {}   # caminho -> (mtime, modelo)
+cache_modelo = {}   # chave -> (mtime, modelo)
 
-# "treinado" = o nosso; "coco" = YOLO pre-treinado (80 classes: pessoa, garrafa, celular...)
+# chave -> (tipo, arquivo de pesos ou None = pre-treinado no COCO, nome pra mostrar)
 MODELOS = {
-    "treinado": MODELO,
-    "coco": os.path.join(RAIZ, "testes-yolo", "yolo11n.pt"),
+    "treinado": ("yolo", MODELO, None),
+    "coco": ("yolo", os.path.join(RAIZ, "testes-yolo", "yolo11n.pt"), None),
+    "rfdetr": ("rfdetr", MODELO_RF, None),
+    "rfdetr-coco": ("rfdetr", None, "RF-DETR Nano pre-treinado (COCO)"),
+    "rfdetr-seg": ("rfdetr-seg", None, "RF-DETR Seg Nano pre-treinado (COCO)"),
 }
 
 
-def caminhoModelo():
-    return MODELOS.get(request.values.get("modelo", "treinado"), MODELO)
+class ErroModelo(Exception):
+    pass
+
+
+@app.errorhandler(ErroModelo)
+def erro_modelo(e):
+    return jsonify(erro=str(e)), 503
+
+
+class ModeloRF:
+    """Deixa o RF-DETR com a mesma 'cara' do YOLO do ultralytics: modelo(frame, conf=...)[0].plot()"""
+
+    def __init__(self, pesos, segmentar):
+        if PASTA_RF not in sys.path:
+            sys.path.insert(0, PASTA_RF)
+        import comum   # rf-detr/comum.py
+        self.comum = comum
+        self.modelo = comum.criarModelo("nano", pesos, segmentar=segmentar)
+        nomes = getattr(self.modelo, "class_names", None) or []
+        self.names = dict(enumerate(nomes)) if isinstance(nomes, (list, tuple)) else dict(nomes)
+
+    def __call__(self, frame, conf=0.25, verbose=False):
+        det = self.comum.preverBGR(self.modelo, frame, conf)
+        nomes = self.comum.nomesDasDeteccoes(det, self.modelo)
+        caixas = types.SimpleNamespace(cls=np.asarray(det.class_id), conf=np.asarray(det.confidence),
+                                       xyxy=np.asarray(det.xyxy))
+        comum = self.comum
+        return [types.SimpleNamespace(
+            boxes=caixas,
+            names={int(c): n for c, n in zip(det.class_id, nomes)},
+            plot=lambda: comum.desenhar(frame, det, nomes),
+        )]
+
+
+def escolhaModelo():
+    chave = request.values.get("modelo", "treinado")
+    return (chave, *MODELOS[chave]) if chave in MODELOS else ("treinado", *MODELOS["treinado"])
 
 
 def carregarModelo():
-    """Carrega o melhor.pt uma vez e recarrega sozinho se ele for re-treinado."""
-    caminho = caminhoModelo()
-    if not os.path.exists(caminho):
+    """Carrega o modelo escolhido uma vez e recarrega sozinho se ele for re-treinado."""
+    chave, tipo, pesos, _ = escolhaModelo()
+    if pesos is not None and not os.path.exists(pesos):
         return None
-    mtime = os.path.getmtime(caminho)
+    mtime = os.path.getmtime(pesos) if pesos else 0
     with trava_modelo:
-        item = cache_modelo.get(caminho)
+        item = cache_modelo.get(chave)
         if item is None or item[0] != mtime:
-            from ultralytics import YOLO
-            cache_modelo[caminho] = (mtime, YOLO(caminho))
-        return cache_modelo[caminho][1]
+            if tipo == "yolo":
+                from ultralytics import YOLO
+                modelo = YOLO(pesos)
+            else:
+                if importlib.util.find_spec("rfdetr") is None:
+                    raise ErroModelo('RF-DETR nao instalado neste venv. Rode: venv\\Scripts\\pip install "rfdetr[train]"')
+                try:
+                    modelo = ModeloRF(pesos, segmentar=tipo == "rfdetr-seg")
+                except Exception as e:
+                    raise ErroModelo(f"nao deu pra carregar o RF-DETR: {e}")
+            cache_modelo[chave] = (mtime, modelo)
+        return cache_modelo[chave][1]
 
 
 def lerConf():
@@ -256,12 +383,18 @@ def config():
 
 @app.get("/modelo")
 def modelo_info():
-    modelo = carregarModelo()
+    chave, tipo, pesos, rotulo = escolhaModelo()
+    try:
+        modelo = carregarModelo()
+    except ErroModelo as e:
+        return jsonify(existe=False, erro=str(e))
     if modelo is None:
-        return jsonify(existe=False)
-    caminho = caminhoModelo()
-    atualizado = datetime.fromtimestamp(os.path.getmtime(caminho)).strftime("%d/%m/%Y %H:%M")
-    arquivo = os.path.relpath(caminho, RAIZ).replace(os.sep, "/")
+        return jsonify(existe=False, arquivo=os.path.relpath(pesos, RAIZ).replace(os.sep, "/"))
+    if pesos:
+        atualizado = datetime.fromtimestamp(os.path.getmtime(pesos)).strftime("%d/%m/%Y %H:%M")
+        arquivo = os.path.relpath(pesos, RAIZ).replace(os.sep, "/")
+    else:
+        atualizado, arquivo = None, rotulo
     return jsonify(existe=True, arquivo=arquivo, atualizado=atualizado, classes=list(modelo.names.values()))
 
 
@@ -390,8 +523,9 @@ def stream():
 
     fonte = request.args.get("fonte", "")
     conf = lerConf()
-    if fonte == "webcam":
-        origem, ao_vivo = 0, True
+    if fonte == "webcam" or fonte.startswith("webcam:"):
+        indice = fonte.split(":", 1)[1] if ":" in fonte else "0"
+        origem, ao_vivo = int(indice) if indice.isdigit() else 0, True
     elif fonte.startswith(("http://", "https://")):
         origem, ao_vivo = fonte, True          # ESP32-CAM (stream MJPEG pela rede)
     else:
@@ -405,6 +539,14 @@ def stream():
             captura = LeitorMJPEG(origem)
         except Exception as e:
             return f"nao deu pra conectar na ESP32: {e}", 502
+    elif isinstance(origem, int):
+        if PASTA_RF not in sys.path:
+            sys.path.insert(0, PASTA_RF)
+        from comum import abrirCamera   # no Windows usa DirectShow: enxerga DroidCam, Iriun, OBS...
+        captura = abrirCamera(origem)
+        if not captura.isOpened():
+            return "nao deu pra abrir a camera", 500
+        captura.set(cv.CAP_PROP_BUFFERSIZE, 1)
     else:
         captura = cv.VideoCapture(origem)
         if not captura.isOpened():

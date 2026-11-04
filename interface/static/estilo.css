@@ -339,6 +339,7 @@ button:focus-visible { outline: 2px solid var(--foco); outline-offset: 3px; }
 button:disabled { opacity: .4; cursor: not-allowed; filter: saturate(.4); }
 button.secundario { background: var(--sec-bg); color: var(--sec-texto); text-shadow: none; }
 button.secundario:hover { filter: brightness(1.1); }
+button + button.secundario { margin-top: 10px; }
 
 .erro { min-height: 20px; margin-top: 12px; color: var(--erro-texto); font-size: 14px; font-weight: 600; }
 .nota { margin: 8px 0 0; color: var(--texto-2); font-size: 13px; }
