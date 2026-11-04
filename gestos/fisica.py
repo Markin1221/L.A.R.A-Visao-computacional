@@ -1,8 +1,8 @@
 """
 Caixa de areia com fisica: pegue objetos com a mao, jogue, estique e lance como estilingue.
 
-  aba de objetos (esquerda)           -> feche a mao num objeto da aba pra criar um na sua mao
-  mao fechada (punho) num objeto      -> pega (segura pelo ponto onde pegou)
+  aba de objetos (esquerda)           -> feche a mao (ou pinca) num item da aba pra criar um na sua mao
+  punho ou pinca num objeto           -> pega (segura pelo ponto onde pegou)
   abrir a mao mexendo                 -> joga (a velocidade da mao vai pro objeto)
   fechar a outra mao no objeto        -> pega no ar / passa de uma mao pra outra
   as DUAS maos fechadas no objeto     -> estica (afaste as maos)
@@ -10,8 +10,11 @@ Caixa de areia com fisica: pegue objetos com a mao, jogue, estique e lance como 
      solta UMA e depois a OUTRA       -> estilingue: ele encolhe em direcao a mao que ficou
                                          e sai voando quando voce solta
   apontar o indicador pra lingueta    -> abre/fecha a aba
+  mao aberta passando rapido          -> tapa (empurra os objetos)
+  rock (indicador + mindinho)         -> ima: puxa os objetos soltos
+  bomba                               -> explode 2.5 s depois de soltar
 
-Teclas: A abre/fecha a aba | G liga/desliga a gravidade | C limpa | Z apaga o ultimo
+Teclas: A abre/fecha a aba | G gravidade (normal/lua/zero/invertida) | S camera lenta | R rastro | C limpa | Z apaga o ultimo
         F tela cheia | H ajuda | Q ou ESC sai
 
 Uso:
@@ -39,7 +42,15 @@ ALCANCE = 60              # px: quao perto da borda do objeto o centro da mao pr
 SOLTAR_ESPERA = 0.07      # s com a pinca aberta pra valer como soltar (um frame ruim nao derruba o objeto)
 PERDIDA_MAX = 0.25        # s que o objeto segue a trajetoria da mao quando o detector perde ela (mao borrada)
 ESPERA_ABA = 0.4          # s apontando pra lingueta pra abrir/fechar
-CAT_PAREDE, CAT_OBJETO = 0b01, 0b10   # categorias de colisao: a busca da pinca ignora as paredes
+ALCANCE_2A_MAO = 130      # px a mais pra segunda mao pegar um objeto que ja esta na outra (pra esticar)
+TAPA_VEL = 700.0          # px/s: mao aberta mais rapida que isso empurra os objetos (tapa)
+IMA_FORCA = 5200.0        # px/s^2: puxao do ima (sinal do rock)
+IMA_RAIO = 520            # px
+BOMBA_PAVIO = 2.5         # s depois de soltar a bomba
+BOMBA_RAIO = 300          # px
+BOMBA_FORCA = 2600.0      # px/s no centro da explosao
+MODOS_GRAVIDADE = [("normal", 1.0), ("lua", 0.17), ("zero", 0.0), ("invertida", -1.0)]
+CAT_PAREDE, CAT_OBJETO, CAT_MAO = 0b001, 0b010, 0b100   # a busca da mao ignora as paredes
 SO_OBJETOS = pymunk.ShapeFilter(mask=CAT_OBJETO)
 
 # ---------------------------------------------------------------- tipos de objeto
@@ -53,6 +64,10 @@ TIPOS = {
                 "cor": (90, 40, 40)},
     "balao":   {"nome": "balao",   "forma": "bola",  "tamanho": 42, "massa": 0.3, "quique": 0.6,  "atrito": 0.3,
                 "cor": (80, 60, 235), "flutua": True},
+    "superbola": {"nome": "superbola", "forma": "bola", "tamanho": 24, "massa": 0.6, "quique": 1.0, "atrito": 0.2,
+                  "cor": (60, 220, 120)},
+    "bomba":   {"nome": "bomba",   "forma": "bola",  "tamanho": 34, "massa": 2.5, "quique": 0.3,  "atrito": 0.6,
+                "cor": (45, 45, 45), "bomba": True},
 }
 
 
@@ -86,6 +101,8 @@ class Objeto:
         self.esticar = (1.0, 0.0) # (fator ao longo do eixo, angulo do eixo) pra desenhar
         self.balanco = None       # (fator inicial, angulo, t0): balanca depois de esticar
         self.gesto = {}
+        self.pavio = None         # bomba: hora em que explode
+        self.rastro = deque(maxlen=14)
 
     @property
     def pos(self):
@@ -116,7 +133,11 @@ class MaoFisica:
 
     def __init__(self, espaco):
         self.body = pymunk.Body(body_type=pymunk.Body.KINEMATIC)
-        espaco.add(self.body)
+        self.shape = pymunk.Circle(self.body, 42)   # so colide quando a mao aberta passa rapido (tapa)
+        self.shape.elasticity, self.shape.friction = 0.9, 0.5
+        self.shape.filter = pymunk.ShapeFilter(categories=CAT_MAO, mask=0)
+        espaco.add(self.body, self.shape)
+        self.modo = None            # "pinca" ou "punho": com qual gesto pegou (o ponto segue esse gesto)
         self.historico = deque()
         self.pinca_antes = False
         self.segurando = None
@@ -134,6 +155,9 @@ class MaoFisica:
         self.historico.append((agora, alvo))
         while self.historico and agora - self.historico[0][0] > 0.35:
             self.historico.popleft()
+
+    def tapa(self, ligado):
+        self.shape.filter = pymunk.ShapeFilter(categories=CAT_MAO, mask=CAT_OBJETO if ligado else 0)
 
     def velocidade(self):
         """
@@ -166,7 +190,9 @@ class Aba:
     def __init__(self, h):
         self.aberta = True
         self.largura = 150
-        self.itens = [(tipo, (75, int(130 + i * 120))) for i, tipo in enumerate(TIPOS)]
+        passo = min(120, (h - 110) // len(TIPOS))
+        self.raio = min(52, passo // 2)
+        self.itens = [(tipo, (75, int(100 + passo / 2 + i * passo))) for i, tipo in enumerate(TIPOS)]
         self.lingueta = (0, h // 2 - 50, 26, 100)   # x, y, l, a (quando fechada fica na borda)
         self.mira_desde = None
 
@@ -184,7 +210,7 @@ class Aba:
         if not self.aberta:
             return None
         for tipo, c in self.itens:
-            if np.linalg.norm(np.array(c) - p) < 52:
+            if np.linalg.norm(np.array(c) - p) < self.raio:
                 return tipo
         return None
 
@@ -196,8 +222,8 @@ class Aba:
             cv.addWeighted(fundo, 0.55, img, 0.45, 0, img)
             cv.putText(img, "objetos", (30, 62), cv.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv.LINE_AA)
             for tipo, (cx, cy) in self.itens:
-                desenharIcone(img, tipo, (cx, cy))
-                cv.putText(img, TIPOS[tipo]["nome"], (cx - 30, cy + 62), cv.FONT_HERSHEY_SIMPLEX, 0.5,
+                desenharIcone(img, tipo, (cx, cy), self.raio - 16)
+                cv.putText(img, TIPOS[tipo]["nome"], (cx - 34, cy + self.raio - 2), cv.FONT_HERSHEY_SIMPLEX, 0.5,
                            (230, 230, 230), 1, cv.LINE_AA)
         fundo = img.copy()
         cv.rectangle(fundo, (x, y), (x + l, y + a), (40, 40, 40), -1)
@@ -219,17 +245,18 @@ def sombrear(img, pts, cor):
     cv.polylines(img, [pts_i], True, escuro, 3, cv.LINE_AA)
 
 
-def desenharIcone(img, tipo, centro):
+def desenharIcone(img, tipo, centro, maximo=36):
     t = TIPOS[tipo]
     c = np.array(centro, float)
+    r = min(t["tamanho"], maximo)
     if t["forma"] == "bola":
         ang = np.linspace(0, 2 * math.pi, 40, endpoint=False)
-        pts = c + np.stack([np.cos(ang), np.sin(ang)], 1) * min(t["tamanho"], 36)
+        pts = c + np.stack([np.cos(ang), np.sin(ang)], 1) * r
     else:
-        s = min(t["tamanho"], 32)
-        pts = c + np.array([[-s, -s], [s, -s], [s, s], [-s, s]])
+        r = min(r, maximo - 4)
+        pts = c + np.array([[-r, -r], [r, -r], [r, r], [-r, r]])
     sombrear(img, pts, t["cor"])
-    detalhes(img, tipo, c, min(t["tamanho"], 36), 0.0)
+    detalhes(img, tipo, c, r, 0.0)
 
 
 def detalhes(img, tipo, c, r, angulo):
@@ -243,6 +270,11 @@ def detalhes(img, tipo, c, r, angulo):
             a = angulo + k * 0.45 - 0.45
             p = c + np.array([math.cos(a - 1.2), math.sin(a - 1.2)]) * r * 0.45
             cv.circle(img, tuple(p.astype(int)), max(3, int(r * 0.1)), (20, 10, 10), -1, cv.LINE_AA)
+    elif tipo == "bomba":   # pavio
+        topo = c + np.array([r * 0.5, -r * 0.85])
+        cv.line(img, tuple(topo.astype(int)), tuple((topo + [r * 0.35, -r * 0.4]).astype(int)), (60, 160, 230), 3, cv.LINE_AA)
+    elif tipo == "superbola":
+        cv.circle(img, ci, max(3, int(r * 0.55)), (255, 255, 255), 2, cv.LINE_AA)
     elif tipo == "balao":
         base = c + np.array([0, r])
         cv.line(img, tuple(base.astype(int)), tuple((base + [6, r * 1.3]).astype(int)), (220, 220, 220), 1, cv.LINE_AA)
@@ -250,15 +282,23 @@ def detalhes(img, tipo, c, r, angulo):
         cv.circle(img, (ci[0] - int(r * 0.35), ci[1] - int(r * 0.35)), max(3, int(r * 0.18)), (255, 255, 255), -1, cv.LINE_AA)
 
 
-def desenharObjeto(img, o):
+def desenharObjeto(img, o, agora):
     pts = o.contorno()
-    sombrear(img, pts, o.t["cor"])
+    cor = o.t["cor"]
+    if o.pavio is not None:   # bomba armada: pisca cada vez mais rapido
+        falta = max(o.pavio - agora, 0.0)
+        if math.sin(agora * (8 + 30 * (1 - falta / BOMBA_PAVIO))) > 0:
+            cor = (40, 40, 230)
+    sombrear(img, pts, cor)
     if o.t["forma"] == "caixa":
         a, b, c_, d = pts[0], pts[1], pts[2], pts[3]
         for k in (1 / 3, 2 / 3):
             p1, p2 = a + (d - a) * k, b + (c_ - b) * k
             cv.line(img, tuple(p1.astype(int)), tuple(p2.astype(int)), tuple(int(v * 0.7) for v in o.t["cor"]), 2, cv.LINE_AA)
     detalhes(img, o.tipo, o.pos, o.t["tamanho"], o.body.angle)
+    if o.pavio is not None:
+        c = tuple(int(v) for v in o.pos)
+        texto(img, f"{max(o.pavio - agora, 0):.1f}", (c[0] - 16, c[1] - o.t["tamanho"] - 12), 0.6, (80, 200, 255))
 
 
 def texto(img, msg, pos, tamanho=0.6, cor=(255, 255, 255)):
@@ -267,9 +307,9 @@ def texto(img, msg, pos, tamanho=0.6, cor=(255, 255, 255)):
 
 
 AJUDA = [
-    "feche a mao na aba: cria  |  feche no objeto: pega  |  abrir mexendo: joga",
-    "2 maos fechadas: estica  |  abre uma e depois a outra: estilingue",
-    "A aba  G gravidade  C limpa  Z desfaz  D mostra o gesto  F tela cheia  H ajuda  Q sai",
+    "punho ou pinca na aba: cria  |  no objeto: pega  |  soltar mexendo: joga  |  2 maos: estica / estilingue",
+    "mao aberta rapida: tapa  |  rock (indicador+mindinho): ima  |  bomba explode 2.5 s depois de soltar",
+    "A aba  G gravidade  S camera lenta  R rastro  C limpa  Z desfaz  D gesto  F tela cheia  H ajuda  Q sai",
 ]
 
 
@@ -324,7 +364,11 @@ def main():
     fisicas = {}       # chave -> MaoFisica
     aba = None
     ajuda = True
-    diagnostico = True   # tecla D: mostra se cada mao esta fechada
+    diagnostico = True   # tecla D: mostra o gesto de cada mao
+    modo_g = 0           # indice em MODOS_GRAVIDADE
+    lenta = False        # tecla S: camera lenta
+    rastro = True        # tecla R
+    explosoes = []       # (pos, t0) pra desenhar
     ultimo_ts = -1
     t_anterior = time.time()
     fps = 0.0
@@ -368,11 +412,32 @@ def main():
             if chave in fisicas and fisicas[chave].segurando is o:
                 fisicas[chave].segurando = None
         o.estado, o.maos = "livre", []
+        if o.t.get("bomba") and o.pavio is None:
+            o.pavio = time.time() + BOMBA_PAVIO
+
+    def explodir(b):
+        for chave in list(b.maos):
+            if chave in fisicas:
+                fisicas[chave].segurando = None
+                fisicas[chave].pinca_antes = False
+        centro = b.pos
+        remover(b)
+        explosoes.append((centro, time.time()))
+        for o in objetos:
+            d = o.pos - centro
+            dist = np.linalg.norm(d)
+            if dist > BOMBA_RAIO or dist < 1e-3:
+                continue
+            if o.estado != "livre":
+                soltarLivre(o)
+            o.body.velocity = tuple(np.array(o.body.velocity) + d / dist * BOMBA_FORCA * (1 - dist / BOMBA_RAIO)
+                                    / max(o.t["massa"], 1.0) ** 0.5)
+            o.body.angular_velocity += 12 * (1 if d[0] > 0 else -1)
 
     def comecarEsticar(o, a, b):
         tirarRestricao(o)
         o.body.body_type = pymunk.Body.KINEMATIC
-        pa, pb = maos[a].centro, maos[b].centro
+        pa, pb = pontoDe(maos[a], fisicas[a]), pontoDe(maos[b], fisicas[b])
         eixo = pb - pa
         o.gesto = {"dist0": max(np.linalg.norm(eixo), 30.0), "ang0": math.atan2(eixo[1], eixo[0]),
                    "angulo_obj0": o.body.angle, "meios": deque(maxlen=6)}
@@ -380,11 +445,25 @@ def main():
         o.balanco = None
         fisicas[a].segurando = fisicas[b].segurando = o
 
-    def objetoEm(p):
+    def objetoEm(p, chave=None):
         info = espaco.point_query_nearest(tuple(p), ALCANCE, SO_OBJETOS)
-        if info is None or info.shape is None:
-            return None
-        return next((o for o in objetos if o.shape is info.shape), None)
+        if info is not None and info.shape is not None:
+            o = next((o for o in objetos if o.shape is info.shape), None)
+            if o is not None:
+                return o
+        # segunda mao: as duas maos nao cabem em cima de um objeto pequeno, entao vale chegar perto
+        perto = [(np.linalg.norm(o.pos - p), o) for o in objetos
+                 if o.estado == "pego" and o.maos and o.maos[0] != chave]
+        perto = [(d, o) for d, o in perto if d < o.t["tamanho"] + ALCANCE_2A_MAO]
+        return min(perto, key=lambda x: x[0])[1] if perto else None
+
+    def segura(m, f):
+        """Mao fechada OU pinca seguram. Depois de pegar, o ponto segue o gesto usado pra pegar."""
+        return m.punho or m.pinca
+
+    def pontoDe(m, f):
+        modo = f.modo if f.pinca_antes and f.modo else ("pinca" if m.pinca else "punho")
+        return m.ponto if modo == "pinca" else m.centro
 
     try:
         while True:
@@ -402,8 +481,9 @@ def main():
                 aba = Aba(h)
 
             agora = time.time()
-            dt = min(max(agora - t_anterior, 1 / 120), 1 / 15)
+            dt_real = min(max(agora - t_anterior, 1 / 120), 1 / 15)
             t_anterior = agora
+            dt = dt_real * (0.3 if lenta else 1.0)   # tempo da fisica (camera lenta)
 
             # ---- maos
             rgb = np.ascontiguousarray(cv.cvtColor(frame, cv.COLOR_BGR2RGB))
@@ -418,12 +498,12 @@ def main():
                 if f is not None:
                     if f.segurando is not None and f.segurando in objetos:
                         soltarLivre(f.segurando, f.velocidade())
-                    espaco.remove(f.body)
+                    espaco.remove(f.body, f.shape)
                 del maos[chave]
             ativas = {k: m for k, m in maos.items() if agora - m.vista <= SUMIU}
             for k in list(fisicas):
                 if k in ativas:
-                    fisicas[k].mover(ativas[k].centro, agora, dt)
+                    fisicas[k].mover(pontoDe(ativas[k], fisicas[k]), agora, dt)
 
             # ---- soltar: so depois da pinca ficar aberta um tempinho, ou da mao sumir de vez.
             # Enquanto a mao some (movimento rapido borra a imagem), o corpo da mao continua
@@ -432,7 +512,7 @@ def main():
             for k, f in fisicas.items():
                 if not f.pinca_antes:
                     continue
-                if k in ativas and ativas[k].punho:
+                if k in ativas and segura(ativas[k], f):
                     f.aberta_desde = f.perdida_desde = None
                 elif k in ativas:
                     f.perdida_desde = None
@@ -480,10 +560,11 @@ def main():
             # ---- pegar (pinca comecou)
             for k, m in ativas.items():
                 f = fisicas[k]
-                if not m.punho or f.pinca_antes:
+                if not segura(m, f) or f.pinca_antes:
                     continue
                 f.pinca_antes = True
-                p = m.centro
+                f.modo = "pinca" if m.pinca else "punho"
+                p = pontoDe(m, f)
                 tipo = aba.itemEm(p)
                 if tipo is not None:
                     if len(objetos) >= MAX_OBJETOS:
@@ -492,7 +573,7 @@ def main():
                     objetos.append(novo)
                     pegar(novo, k, p)
                     continue
-                o = objetoEm(p)
+                o = objetoEm(p, k)
                 if o is None:
                     continue
                 if o.estado == "pego" and o.maos and o.maos[0] != k and o.maos[0] in ativas:
@@ -507,7 +588,7 @@ def main():
                     a, b = o.maos
                     if a not in ativas or b not in ativas:
                         continue
-                    pa, pb = ativas[a].centro, ativas[b].centro
+                    pa, pb = pontoDe(ativas[a], fisicas[a]), pontoDe(ativas[b], fisicas[b])
                     eixo = pb - pa
                     meio = (pa + pb) / 2
                     ang = math.atan2(eixo[1], eixo[0])
@@ -533,7 +614,31 @@ def main():
                         amplitude = min(abs(s0 - 1), 0.5) * (1 if s0 >= 1 else -1)
                         o.esticar = (1 + amplitude * math.exp(-5 * t) * math.cos(22 * t), eixo)
 
+            # ---- tapa: mao aberta e rapida empurra; nao bate no objeto que acabou de jogar
+            for k, f in fisicas.items():
+                m = ativas.get(k)
+                rapida = np.linalg.norm(np.array(f.body.velocity)) > TAPA_VEL
+                f.tapa(m is not None and not f.pinca_antes and f.segurando is None and rapida
+                       and not m.punho and not m.pinca and agora - f.solto_em > 0.3)
+
+            # ---- ima: sinal do rock puxa os objetos soltos pra mao
+            imas = [m.centro for k, m in ativas.items() if m.rock and fisicas[k].segurando is None]
+            for c in imas:
+                for o in objetos:
+                    if o.estado != "livre":
+                        continue
+                    d = c - o.pos
+                    dist = np.linalg.norm(d)
+                    if 1 < dist < IMA_RAIO:
+                        v = np.array(o.body.velocity) * (0.9 if dist < 120 else 1.0)   # freia perto da mao
+                        o.body.velocity = tuple(v + d / dist * IMA_FORCA * dt)
+
+            # ---- bombas
+            for o in [o for o in objetos if o.pavio is not None and agora >= o.pavio]:
+                explodir(o)
+
             # ---- fisica
+            espaco.gravity = (0, GRAVIDADE * MODOS_GRAVIDADE[modo_g][1])
             for _ in range(SUBPASSOS):
                 espaco.step(dt / SUBPASSOS)
             for o in objetos:
@@ -553,6 +658,11 @@ def main():
                 if (x, y) != tuple(o.body.position):
                     o.body.position = (x, y)
                 o.body.velocity = tuple(v)
+            for o in objetos:
+                if np.linalg.norm(np.array(o.body.velocity)) > 350:
+                    o.rastro.append(tuple(o.pos.astype(int)))
+                elif o.rastro:
+                    o.rastro.popleft()
 
             # ---- abrir/fechar a aba apontando pra lingueta
             apontando = any(m.apontando and aba.naLingueta(m.ponta) for m in ativas.values())
@@ -568,19 +678,42 @@ def main():
 
             # ---- tela
             saida = frame.copy()
+            if rastro:
+                for o in objetos:
+                    pts = list(o.rastro)
+                    for i in range(1, len(pts)):
+                        grossura = max(1, int(o.t["tamanho"] * 0.6 * i / len(pts)))
+                        cv.line(saida, pts[i - 1], pts[i], o.t["cor"], grossura, cv.LINE_AA)
             for o in objetos:
-                desenharObjeto(saida, o)
+                desenharObjeto(saida, o, agora)
+            for pos, t0 in list(explosoes):
+                t = agora - t0
+                if t > 0.4:
+                    explosoes.remove((pos, t0))
+                    continue
+                c = tuple(int(v) for v in pos)
+                cv.circle(saida, c, int(40 + BOMBA_RAIO * t / 0.4), (40, 160, 255), max(2, int(14 * (1 - t / 0.4))), cv.LINE_AA)
+                cv.circle(saida, c, int(60 * (1 - t / 0.4)) + 1, (200, 240, 255), -1, cv.LINE_AA)
+            for c in imas:
+                fase = (agora * 2) % 1
+                for k in range(3):
+                    raio = int(IMA_RAIO * ((fase + k / 3) % 1))
+                    cv.circle(saida, tuple(int(v) for v in c), max(raio, 1), (230, 120, 255), 1, cv.LINE_AA)
             aba.desenhar(saida, progresso)
             for k, m in ativas.items():
-                p = tuple(int(v) for v in m.centro)
-                cor = (0, 237, 204) if fisicas[k].segurando is not None else (255, 255, 255)
-                if m.punho:
-                    cv.circle(saida, p, 22, cor, -1, cv.LINE_AA)
+                f = fisicas[k]
+                p = tuple(int(v) for v in pontoDe(m, f))
+                cor = (0, 237, 204) if f.segurando is not None else (255, 255, 255)
+                if segura(m, f):
+                    cv.circle(saida, p, 12 if m.pinca else 22, cor, -1, cv.LINE_AA)
                 else:
                     cv.circle(saida, p, 26, cor, 2, cv.LINE_AA)
+                if f.shape.filter.mask:   # tapa ligado
+                    cv.circle(saida, tuple(int(v) for v in f.body.position), 42, (80, 200, 255), 3, cv.LINE_AA)
                 if diagnostico:
-                    texto(saida, "FECHADA" if m.punho else "aberta", (p[0] + 30, p[1] - 14), 0.55,
-                          (0, 237, 204) if m.punho else (255, 255, 255))
+                    rotulo = "punho" if m.punho else "PINCA" if m.pinca else "rock (ima)" if m.rock else "aberta"
+                    texto(saida, rotulo, (p[0] + 30, p[1] - 14), 0.55,
+                          (0, 237, 204) if segura(m, f) else (255, 255, 255))
             for o in objetos:   # elastico: linha da mola
                 if o.estado == "elastico" and o.maos and o.maos[0] in fisicas:
                     q = tuple(int(v) for v in fisicas[o.maos[0]].body.position)
@@ -589,7 +722,8 @@ def main():
             gasto = max(time.time() - agora, 1e-3)
             fps = 0.9 * fps + 0.1 / gasto if fps else 1 / gasto
             x0 = aba.largura + 40 if aba.aberta else 40
-            texto(saida, f"{fps:.0f} FPS  |  {len(objetos)} objeto(s)  |  gravidade {'ligada' if espaco.gravity[1] else 'desligada'}",
+            texto(saida, f"{fps:.0f} FPS  |  {len(objetos)} objeto(s)  |  gravidade {MODOS_GRAVIDADE[modo_g][0]}"
+                         + ("  |  CAMERA LENTA" if lenta else ""),
                   (x0, 34))
             if ajuda:
                 for i, linha in enumerate(AJUDA):
@@ -603,7 +737,11 @@ def main():
             if tecla == ord("a"):
                 aba.aberta = not aba.aberta
             elif tecla == ord("g"):
-                espaco.gravity = (0, 0 if espaco.gravity[1] else GRAVIDADE)
+                modo_g = (modo_g + 1) % len(MODOS_GRAVIDADE)
+            elif tecla == ord("s"):
+                lenta = not lenta
+            elif tecla == ord("r"):
+                rastro = not rastro
             elif tecla == ord("c"):
                 for o in list(objetos):
                     remover(o)
