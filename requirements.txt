@@ -7,3 +7,5 @@ flask
 rfdetr[train]
 # gestos/ (desenho, mouse por mao, cabeca e olhar)
 mediapipe
+pymunk
+pillow

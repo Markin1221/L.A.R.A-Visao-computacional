@@ -48,11 +48,11 @@ ARTICULACAO = {INDICADOR: 6, MEDIO: 10, ANELAR: 14, MINDINHO: 18}
 BASE_MEDIO = 9
 PALMA = [0, 5, 9, 13, 17]
 
-PINCA_FECHA = 0.30      # distancia polegar-indicador / tamanho da palma (so na imagem 2D)
-PINCA_ABRE = 0.45       # histerese: precisa abrir mais pra soltar (evita piscar)
-PINCA_FECHA_M = 0.040   # mesma coisa em 3D, em metros: nao muda quando a mao inclina
-PINCA_ABRE_M = 0.065
-PINCA_2D_REFORCO = 0.22 # na imagem 2D: tao junto que e pinca mesmo se o 3D errar (ex.: dedo escondido)
+PINCA_FECHA = 0.25      # distancia polegar-indicador / tamanho da palma (so na imagem 2D)
+PINCA_ABRE = 0.40       # histerese: precisa abrir mais pra soltar (evita piscar)
+PINCA_FECHA_M = 0.028   # mesma coisa em 3D, em metros: nao muda quando a mao inclina
+PINCA_ABRE_M = 0.048
+PINCA_2D_REFORCO = 0.16 # na imagem 2D: tao junto que e pinca mesmo se o 3D errar (ex.: dedo escondido)
 ESPERA_DESENHO = 0.12   # s de pinca antes de comecar a desenhar
 DESCARTA_TRACO = 0.5    # s: traco mais curto que isso e descartado se virar gesto de 2 maos
 ESPERA_COR = 0.25       # s com o dedo em cima da cor pra trocar
@@ -166,11 +166,15 @@ class Mao:
         def esticado(dedo):
             return np.linalg.norm(pts[dedo] - pts[PULSO]) > 1.15 * np.linalg.norm(pts[ARTICULACAO[dedo]] - pts[PULSO])
 
+        def dobra(dedo):   # < 1: ponta mais perto do pulso que a articulacao (dedo fechado)
+            return np.linalg.norm(pts[dedo] - pts[PULSO]) / (np.linalg.norm(pts[ARTICULACAO[dedo]] - pts[PULSO]) + 1e-6)
+
         def dobrado(dedo):
-            return np.linalg.norm(pts[dedo] - pts[PULSO]) < 1.0 * np.linalg.norm(pts[ARTICULACAO[dedo]] - pts[PULSO])
+            return dobra(dedo) < 1.05
 
         # punho vem primeiro: com a mao fechada o polegar encosta no indicador e pareceria pinca
-        self.punho = all(dobrado(d) for d in (INDICADOR, MEDIO, ANELAR, MINDINHO))
+        fechados = sum(dobrado(d) for d in (MEDIO, ANELAR, MINDINHO))
+        self.punho = fechados >= 3 and dobra(INDICADOR) < 1.12 or fechados >= 2 and dobrado(INDICADOR)
 
         antes = self.pinca
         dist2 = np.linalg.norm(pts[POLEGAR] - pts[INDICADOR]) / palma
@@ -184,7 +188,14 @@ class Mao:
                 dist2 < (PINCA_2D_REFORCO * 1.4 if antes else PINCA_2D_REFORCO)   # solta rapido
         else:
             junto = dist2 < (PINCA_ABRE if antes else PINCA_FECHA)
-        self.pinca = not self.punho and junto
+        # pra COMECAR a pinca o indicador tem que estar pra fora (no punho ele fica dobrado);
+        # depois de comecar, vale enquanto os dedos estiverem juntos, mesmo recuando os dedos
+        if antes:
+            self.pinca = junto
+        else:
+            self.pinca = not self.punho and junto and dobra(INDICADOR) > 1.0
+        if self.pinca:
+            self.punho = False
 
         alvo = (pts[POLEGAR] + pts[INDICADOR]) / 2
         if self.ponto is None:
