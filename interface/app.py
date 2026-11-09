@@ -2,6 +2,8 @@
 Interface web simples pra testar o projeto:
   - aba Treinar: envia um video, importa pro dataset e treina YOLO, RF-DETR ou os dois
   - aba Testar: roda o modelo escolhido numa imagem, num video, na webcam ou na ESP32
+  - profundidade: conta tambem os produtos escondidos atras do primeiro da fileira (secao "profundidade" deste arquivo)
+  - MQTT: publica as deteccoes e a contagem de cada produto (estoque), ver interface/mqtt_lara.py
 
 Pro RF-DETR, instale no mesmo venv:  venv\\Scripts\\pip install "rfdetr[train]"
 
@@ -25,12 +27,16 @@ PYTHON = next((p for p in (_venv_win, _venv_unix) if os.path.exists(p)), sys.exe
 if os.path.normcase(os.path.abspath(sys.executable)) != os.path.normcase(os.path.abspath(PYTHON)) \
         and not os.environ.get("LARA_RELANCADO"):
     print(f"reiniciando com o python do venv: {PYTHON}")
-    sys.exit(subprocess.call(
-        [PYTHON, os.path.abspath(__file__)] + sys.argv[1:],
-        env=dict(os.environ, LARA_RELANCADO="1"),
-    ))
+    try:
+        sys.exit(subprocess.call(
+            [PYTHON, os.path.abspath(__file__)] + sys.argv[1:],
+            env=dict(os.environ, LARA_RELANCADO="1"),
+        ))
+    except KeyboardInterrupt:   # Ctrl+C: sai quieto, sem traceback
+        sys.exit(0)
 
 import base64
+import json
 import importlib.util
 import re
 import threading
@@ -42,6 +48,8 @@ from datetime import datetime
 import cv2 as cv
 import numpy as np
 from flask import Flask, Response, jsonify, render_template, request
+
+from mqtt_lara import LaraMQTT
 
 SCRIPT = os.path.join(RAIZ, "testes-b-box", "popular_dataset.py")
 TREINO_YOLO = os.path.join(RAIZ, "testes-b-box", "treinar.py")
@@ -64,7 +72,242 @@ ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 LINHA_EPOCA = re.compile(r"^\s*(\d+)/(\d+)\s")      # ex: "  3/50   1.2G  1.234 ..."
 BARRA = re.compile(r"\d+%\||it/s|s/it|\d+/\d+\s*\[")
 
+# ---------------------------------------------------------------- profundidade
+# Profundidade pra contar o que esta ESCONDIDO atras do primeiro produto da fileira (gondola de supermercado).
+#
+# Ideia (camera de frente, produtos encostados no fundo da prateleira):
+#   - o detector (YOLO / RF-DETR) acha o produto da FRENTE de cada fileira;
+#   - um modelo de profundidade (Depth Anything V2) diz o quanto esse produto esta RECUADO
+#     em relacao a beirada da prateleira;
+#   - quantidade na fileira = (profundidade da prateleira - recuo) / profundidade do produto.
+#     Fileira cheia: o da frente fica na beirada (recuo 0). Sobrou 1: ele fica la no fundo.
+#
+# O modelo de profundidade devolve uma profundidade RELATIVA (sem escala). Por isso a calibracao:
+# voce marca na imagem um ponto na BEIRADA da prateleira e um no FUNDO (parede do fundo, num vao)
+# e diz as distancias reais. Com esses dois pontos de referencia, em todo frame, da pra converter
+# a profundidade relativa em centimetros. A camera precisa ficar parada depois de calibrar.
+#
+# Precisa de: pip install transformers   (o torch ja vem com o ultralytics)
+# Na primeira vez baixa o modelo (uns 100 MB) do Hugging Face.
+
+CAMINHO_CAL = os.path.join(RAIZ, "modelos", "calibracao_prateleira.json")
+MODELO_PROF = os.environ.get("LARA_PROFUNDIDADE_MODELO", "depth-anything/Depth-Anything-V2-Small-hf")
+INTERVALO_AO_VIVO = 0.6   # s entre mapas de profundidade no ao vivo (a camera fica parada)
+
+PADRAO = {
+    "frente": None,                # [x, y] de 0 a 1: um ponto na beirada da prateleira
+    "fundo": None,                 # [x, y] de 0 a 1: um ponto na parede do fundo
+    "dist_camera_cm": 60.0,        # da camera ate a beirada da prateleira
+    "prof_prateleira_cm": 40.0,    # da beirada ate o fundo
+    "prof_padrao_cm": 8.0,         # profundidade de um produto (quando a classe nao tem a sua)
+    "prof_produto_cm": {},         # {"doritos": 6, "coca_cola_2l": 11}
+}
+
+
+def carregarCalibracao():
+    cal = dict(PADRAO)
+    try:
+        with open(CAMINHO_CAL, encoding="utf-8") as f:
+            cal.update(json.load(f))
+    except (OSError, ValueError):
+        pass
+    return cal
+
+
+class Profundidade:
+    def __init__(self):
+        self.cal = carregarCalibracao()
+        self.modelo = self.processador = self.torch = self.dispositivo = None
+        self.erro = None
+        self.trava = threading.Lock()
+        self.ultimo_mapa = None
+        self.ultimo_em = 0.0
+
+    # ------------------------------------------------------------ estado
+    def disponivel(self):
+        return importlib.util.find_spec("transformers") is not None
+
+    def calibrada(self):
+        return bool(self.cal.get("frente") and self.cal.get("fundo"))
+
+    def info(self):
+        return {"disponivel": self.disponivel(), "carregado": self.modelo is not None, "erro": self.erro,
+                "calibrada": self.calibrada(), "calibracao": self.cal, "modelo": MODELO_PROF}
+
+    def salvar(self, novo):
+        cal = dict(self.cal)
+        for chave in PADRAO:
+            if chave in novo:
+                cal[chave] = novo[chave]
+        for chave in ("dist_camera_cm", "prof_prateleira_cm", "prof_padrao_cm"):
+            cal[chave] = max(float(cal[chave]), 0.5)
+        cal["prof_produto_cm"] = {str(k): max(float(v), 0.5) for k, v in (cal.get("prof_produto_cm") or {}).items()
+                                  if v not in (None, "")}
+        for chave in ("frente", "fundo"):
+            p = cal.get(chave)
+            cal[chave] = [min(max(float(p[0]), 0), 1), min(max(float(p[1]), 0), 1)] if p else None
+        os.makedirs(os.path.dirname(CAMINHO_CAL), exist_ok=True)
+        with open(CAMINHO_CAL, "w", encoding="utf-8") as f:
+            json.dump(cal, f, ensure_ascii=False, indent=2)
+        self.cal = cal
+        return cal
+
+    # ------------------------------------------------------------ modelo
+    def _carregar(self):
+        if self.modelo is not None:
+            return
+        if not self.disponivel():
+            self.erro = "instale com: venv\\Scripts\\pip install transformers"
+            raise RuntimeError(self.erro)
+        try:
+            import torch
+            from transformers import AutoImageProcessor, AutoModelForDepthEstimation
+            print(f"carregando o modelo de profundidade {MODELO_PROF} (na primeira vez baixa uns 100 MB)...")
+            self.torch = torch
+            self.dispositivo = "cuda" if torch.cuda.is_available() else "cpu"
+            self.processador = AutoImageProcessor.from_pretrained(MODELO_PROF)
+            self.modelo = AutoModelForDepthEstimation.from_pretrained(MODELO_PROF).to(self.dispositivo).eval()
+            self.erro = None
+        except Exception as e:
+            self.erro = f"nao carregou o modelo de profundidade: {e}"
+            raise RuntimeError(self.erro) from e
+
+    def mapa(self, frame):
+        """Profundidade relativa (maior = mais PERTO), do tamanho do frame."""
+        with self.trava:
+            self._carregar()
+            rgb = cv.cvtColor(frame, cv.COLOR_BGR2RGB)
+            entrada = self.processador(images=rgb, return_tensors="pt").to(self.dispositivo)
+            with self.torch.no_grad():
+                saida = self.modelo(**entrada).predicted_depth
+            m = saida.squeeze().float().cpu().numpy()
+        return cv.resize(m, (frame.shape[1], frame.shape[0]), interpolation=cv.INTER_LINEAR)
+
+    def mapaAoVivo(self, frame, intervalo=INTERVALO_AO_VIVO):
+        """No ao vivo recalcula so de tempos em tempos (a camera e a gondola ficam paradas)."""
+        agora = time.time()
+        if self.ultimo_mapa is None or self.ultimo_mapa.shape != frame.shape[:2] or \
+                agora - self.ultimo_em >= intervalo:
+            self.ultimo_mapa, self.ultimo_em = self.mapa(frame), agora
+        return self.ultimo_mapa
+
+    def reiniciarAoVivo(self):
+        self.ultimo_mapa = None
+
+    # ------------------------------------------------------------ contagem
+    @staticmethod
+    def _amostra(mapa, ponto, raio=0.015):
+        h, w = mapa.shape
+        x, y = int(ponto[0] * w), int(ponto[1] * h)
+        r = max(int(raio * max(w, h)), 3)
+        regiao = mapa[max(y - r, 0):y + r + 1, max(x - r, 0):x + r + 1]
+        return float(np.median(regiao)) if regiao.size else float(mapa[min(y, h - 1), min(x, w - 1)])
+
+    def _escala(self, mapa):
+        """
+        O modelo da a profundidade 'invertida' a menos de escala e deslocamento: d = s / z + t.
+        Com a beirada (z1) e o fundo (z2) como referencias, acha s e t neste frame.
+        """
+        z1 = float(self.cal["dist_camera_cm"])
+        z2 = z1 + float(self.cal["prof_prateleira_cm"])
+        d1, d2 = self._amostra(mapa, self.cal["frente"]), self._amostra(mapa, self.cal["fundo"])
+        if d1 - d2 <= 1e-6:   # o fundo "mais perto" que a frente: pontos marcados errado
+            return None
+        s = (d1 - d2) / (1 / z1 - 1 / z2)
+        return s, d1 - s / z1, z1
+
+    def estimar(self, mapa, caixas, classes):
+        """
+        caixas: Nx4 (x0, y0, x1, y1) em px; classes: nomes. Devolve, por caixa,
+        {"quantidade": n, "recuo_cm": cm ou None}. Sem calibracao, conta 1 por caixa.
+        """
+        escala = self._escala(mapa) if self.calibrada() else None
+        prof_prat = float(self.cal["prof_prateleira_cm"])
+        saida = []
+        for (x0, y0, x1, y1), classe in zip(caixas, classes):
+            if escala is None:
+                saida.append({"quantidade": 1, "recuo_cm": None})
+                continue
+            s, t, z1 = escala
+            # meio da caixa: a face da frente do produto (as bordas pegam o fundo ou o vizinho)
+            cx0, cx1 = int(x0 + (x1 - x0) * 0.3), int(x0 + (x1 - x0) * 0.7)
+            cy0, cy1 = int(y0 + (y1 - y0) * 0.3), int(y0 + (y1 - y0) * 0.7)
+            regiao = mapa[max(cy0, 0):max(cy1, cy0 + 1), max(cx0, 0):max(cx1, cx0 + 1)]
+            d = float(np.median(regiao)) if regiao.size else t + s / z1
+            z = s / (d - t) if d - t > 1e-6 else z1 + prof_prat
+            recuo = min(max(z - z1, 0.0), prof_prat)
+            prof_item = float(self.cal["prof_produto_cm"].get(classe, self.cal["prof_padrao_cm"]))
+            n = max(1, int(round((prof_prat - recuo) / prof_item)))
+            saida.append({"quantidade": n, "recuo_cm": round(recuo, 1)})
+        return saida
+
+    @staticmethod
+    def relativa(mapa, caixas):
+        """Modo teste (sem prateleira): o quanto cada objeto esta PERTO, de 0 a 100% da cena. Sem calibracao."""
+        lo, hi = np.percentile(mapa, 2), np.percentile(mapa, 98)
+        saida = []
+        for x0, y0, x1, y1 in caixas:
+            cx0, cx1 = int(x0 + (x1 - x0) * 0.3), int(x0 + (x1 - x0) * 0.7)
+            cy0, cy1 = int(y0 + (y1 - y0) * 0.3), int(y0 + (y1 - y0) * 0.7)
+            regiao = mapa[max(cy0, 0):max(cy1, cy0 + 1), max(cx0, 0):max(cx1, cx0 + 1)]
+            d = float(np.median(regiao)) if regiao.size else lo
+            saida.append({"proximidade": int(round(100 * min(max((d - lo) / max(hi - lo, 1e-6), 0), 1)))})
+        return saida
+
+    @staticmethod
+    def desenharRelativa(img, mapa, caixas, relativas):
+        """Imagem | mapa de profundidade, lado a lado (claro = perto). Cada objeto mostra '% perto'."""
+        lo, hi = np.percentile(mapa, 2), np.percentile(mapa, 98)
+        m = (np.clip((mapa - lo) / max(hi - lo, 1e-6), 0, 1) * 255).astype(np.uint8)
+        cor = cv.applyColorMap(m, cv.COLORMAP_INFERNO)
+        for (x0, y0, x1, y1), e in zip(caixas, relativas):
+            for alvo in (img, cor):
+                texto = f"{e['proximidade']}% perto"
+                pos = (int(x0) + 6, max(int(y0) + 26, 26))
+                cv.putText(alvo, texto, pos, cv.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 0), 5, cv.LINE_AA)
+                cv.putText(alvo, texto, pos, cv.FONT_HERSHEY_SIMPLEX, 0.8, (80, 255, 160), 2, cv.LINE_AA)
+            cv.rectangle(cor, (int(x0), int(y0)), (int(x1), int(y1)), (255, 255, 255), 2)
+        h = img.shape[0]
+        for i, (rot, cl) in enumerate((("perto", 255), ("longe", 0))):
+            amostra = cv.applyColorMap(np.array([[cl]], np.uint8), cv.COLORMAP_INFERNO)[0, 0].tolist()
+            cv.rectangle(cor, (12, h - 60 + i * 26), (32, h - 42 + i * 26), amostra, -1)
+            cv.putText(cor, rot, (40, h - 44 + i * 26), cv.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2, cv.LINE_AA)
+        return np.hstack([img, cor])
+
+    # ------------------------------------------------------------ desenho
+    def desenhar(self, img, mapa, caixas, estimativas, mostrar_mapa=True):
+        h, w = img.shape[:2]
+        for (x0, y0, x1, y1), e in zip(caixas, estimativas):
+            texto = f"x{e['quantidade']}"
+            if e["recuo_cm"] is not None:
+                texto += f"  {e['recuo_cm']:.0f}cm"
+            pos = (int(x0) + 6, int(y1) - 10)
+            cv.putText(img, texto, pos, cv.FONT_HERSHEY_SIMPLEX, 0.9, (0, 0, 0), 5, cv.LINE_AA)
+            cv.putText(img, texto, pos, cv.FONT_HERSHEY_SIMPLEX, 0.9, (80, 255, 160), 2, cv.LINE_AA)
+        for chave, cor in (("frente", (80, 255, 160)), ("fundo", (255, 120, 230))):
+            p = self.cal.get(chave)
+            if p:
+                c = (int(p[0] * w), int(p[1] * h))
+                cv.circle(img, c, 9, (0, 0, 0), 4, cv.LINE_AA)
+                cv.circle(img, c, 9, cor, 2, cv.LINE_AA)
+                cv.putText(img, chave, (c[0] + 12, c[1] + 5), cv.FONT_HERSHEY_SIMPLEX, 0.55, cor, 2, cv.LINE_AA)
+        if mostrar_mapa and mapa is not None:   # miniatura do mapa de profundidade no canto
+            lw = max(w // 4, 80)
+            lh = int(lw * h / w)
+            m = cv.normalize(mapa, None, 0, 255, cv.NORM_MINMAX).astype(np.uint8)
+            mini = cv.applyColorMap(cv.resize(m, (lw, lh)), cv.COLORMAP_INFERNO)
+            img[8:8 + lh, w - lw - 8:w - 8] = mini
+            cv.rectangle(img, (w - lw - 8, 8), (w - 8, 8 + lh), (255, 255, 255), 1)
+        if not self.calibrada():
+            msg = "profundidade sem calibracao: contando so o que aparece"
+            cv.putText(img, msg, (12, h - 16), cv.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 4, cv.LINE_AA)
+            cv.putText(img, msg, (12, h - 16), cv.FONT_HERSHEY_SIMPLEX, 0.6, (80, 200, 255), 2, cv.LINE_AA)
+        return img
+
+
 app = Flask(__name__)
+MQTT = LaraMQTT()   # deteccoes + contagem do estoque (nao trava nada se o broker estiver fora)
+PROF = Profundidade()   # modelo de profundidade so carrega quando alguem ligar a opcao
 
 
 # ---------------------------------------------------------------- treino
@@ -367,6 +610,18 @@ def lerConf():
         return 0.25
 
 
+def caixasDe(resultado):
+    xyxy = resultado.boxes.xyxy
+    xyxy = xyxy.cpu().numpy() if hasattr(xyxy, "cpu") else np.asarray(xyxy)
+    return np.asarray(xyxy, float).reshape(-1, 4)
+
+
+def lerProf():
+    """'0' desligada | '1' prateleira (conta os de tras, precisa calibrar) | 'rel' teste (so relativa)."""
+    modo = request.values.get("prof", "0")
+    return modo if modo in ("1", "rel") else None
+
+
 def jpeg(frame, qualidade=85):
     return cv.imencode(".jpg", frame, [cv.IMWRITE_JPEG_QUALITY, qualidade])[1].tobytes()
 
@@ -419,9 +674,54 @@ def testar_imagem():
         {"id": int(c), "classe": resultado.names[int(c)], "conf": float(p)}
         for c, p in zip(resultado.boxes.cls.tolist(), resultado.boxes.conf.tolist())
     ]
+    saida = resultado.plot()
+    modo_prof = lerProf()
+    if modo_prof:
+        try:
+            caixas = caixasDe(resultado)
+            mapa = PROF.mapa(frame)
+        except RuntimeError as e:
+            return jsonify(erro=str(e)), 503
+        if modo_prof == "rel":   # teste: so quao perto cada coisa esta
+            relativas = PROF.relativa(mapa, caixas)
+            for d, e in zip(deteccoes, relativas):
+                d.update(e)
+            saida = PROF.desenharRelativa(saida, mapa, caixas, relativas)
+        else:                    # prateleira: quantos tem em cada fileira, contando os escondidos atras
+            estimativas = PROF.estimar(mapa, caixas, [d["classe"] for d in deteccoes])
+            for d, e in zip(deteccoes, estimativas):
+                d.update(e)
+            PROF.desenhar(saida, mapa, caixas, estimativas)
+        tempo_ms = (time.time() - inicio) * 1000
     deteccoes.sort(key=lambda d: d["conf"], reverse=True)
-    imagem = "data:image/jpeg;base64," + base64.b64encode(jpeg(resultado.plot(), 90)).decode()
-    return jsonify(imagem=imagem, deteccoes=deteccoes, tempo_ms=tempo_ms)
+    contagem = MQTT.publicarDeteccoes(deteccoes, "imagem", ao_vivo=False)
+    imagem = "data:image/jpeg;base64," + base64.b64encode(jpeg(saida, 90)).decode()
+    return jsonify(imagem=imagem, deteccoes=deteccoes, contagem=contagem, tempo_ms=tempo_ms)
+
+
+@app.get("/calibracao")
+def calibracao_ver():
+    info = PROF.info()
+    try:
+        modelo = carregarModelo()
+        info["classes"] = list(modelo.names.values()) if modelo is not None else []
+    except ErroModelo:
+        info["classes"] = []
+    return jsonify(info)
+
+
+@app.post("/calibracao")
+def calibracao_salvar():
+    try:
+        return jsonify(ok=True, calibracao=PROF.salvar(request.get_json(force=True) or {}))
+    except (TypeError, ValueError) as e:
+        return jsonify(ok=False, erro=f"valor invalido: {e}"), 400
+
+
+@app.get("/contagem")
+def contagem_atual():
+    """Contagem estavel do ao vivo + estado do MQTT (a pagina Testar consulta a cada segundo)."""
+    return jsonify(MQTT.info())
 
 
 @app.post("/testar/video")
@@ -523,6 +823,7 @@ def stream():
 
     fonte = request.args.get("fonte", "")
     conf = lerConf()
+    usar_prof = lerProf()
     if fonte == "webcam" or fonte.startswith("webcam:"):
         indice = fonte.split(":", 1)[1] if ":" in fonte else "0"
         origem, ao_vivo = int(indice) if indice.isdigit() else 0, True
@@ -558,6 +859,10 @@ def stream():
         fps_video = captura.get(cv.CAP_PROP_FPS) or 30
         intervalo = 0 if ao_vivo else 1 / fps_video
         fps = 0.0
+        nome_fonte = "video" if not ao_vivo else ("webcam" if isinstance(origem, int) else "esp32")
+        MQTT.reiniciarAoVivo()
+        PROF.reiniciarAoVivo()
+        erro_prof = None
         try:
             while True:
                 inicio = time.time()
@@ -566,6 +871,30 @@ def stream():
                     break
                 resultado = modelo(frame, conf=conf, verbose=False)[0]
                 saida = resultado.plot()
+                deteccoes = [{"classe": resultado.names[int(c)], "conf": float(p)}
+                             for c, p in zip(resultado.boxes.cls.tolist(), resultado.boxes.conf.tolist())]
+                if usar_prof and erro_prof is None:
+                    try:
+                        caixas = caixasDe(resultado)
+                        # teste com voce na webcam: atualiza quase todo frame (voce se mexe; a gondola nao)
+                        mapa = (PROF.mapaAoVivo(frame, 0.1 if usar_prof == "rel" else INTERVALO_AO_VIVO)
+                                if ao_vivo else PROF.mapa(frame))
+                        if usar_prof == "rel":
+                            relativas = PROF.relativa(mapa, caixas)
+                            for d, e in zip(deteccoes, relativas):
+                                d.update(e)
+                            saida = PROF.desenharRelativa(saida, mapa, caixas, relativas)
+                        else:
+                            estimativas = PROF.estimar(mapa, caixas, [d["classe"] for d in deteccoes])
+                            for d, e in zip(deteccoes, estimativas):
+                                d.update(e)
+                            PROF.desenhar(saida, mapa, caixas, estimativas)
+                    except RuntimeError as e:
+                        erro_prof = str(e)
+                if erro_prof:
+                    cv.putText(saida, erro_prof[:70], (12, saida.shape[0] - 16), cv.FONT_HERSHEY_SIMPLEX, 0.55,
+                               (60, 60, 255), 2, cv.LINE_AA)
+                MQTT.publicarDeteccoes(deteccoes, nome_fonte)
 
                 gasto = time.time() - inicio
                 fps = 0.9 * fps + 0.1 * (1 / max(gasto, 1e-3)) if fps else 1 / max(gasto, 1e-3)

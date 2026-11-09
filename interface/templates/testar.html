@@ -52,9 +52,35 @@
       <label class="faixa" for="conf">Confiança mínima <output id="confValor">0.25</output></label>
       <input type="range" id="conf" min="0.05" max="0.95" step="0.05" value="0.25">
 
+      <label for="usarProf">Profundidade</label>
+      <select id="usarProf">
+        <option value="0">Desligada</option>
+        <option value="rel">Teste: ver a profundidade (sem prateleira)</option>
+        <option value="1">Prateleira: contar os produtos de trás</option>
+      </select>
+      <p class="nota" id="notaProf"></p>
+
       <button type="button" id="botao">Testar</button>
       <button type="button" id="parar" class="secundario oculto">Parar</button>
       <div class="erro" id="msg" role="alert"></div>
+
+      <details class="calibrar separado" id="calibrar">
+        <summary>Calibrar prateleira</summary>
+        <p class="nota">Deixe a câmera parada de frente pra gôndola e comece um teste. Clique em <b>Marcar beirada</b> e depois na imagem, na beirada da prateleira (a fita de preço). Depois <b>Marcar fundo</b>, num vão onde aparece a parede do fundo.</p>
+        <div class="marcar">
+          <button type="button" class="secundario" data-marca="frente">Marcar beirada</button>
+          <button type="button" class="secundario" data-marca="fundo">Marcar fundo</button>
+        </div>
+        <label for="distCamera">Câmera até a beirada (cm)</label>
+        <input type="number" id="distCamera" min="1" step="1">
+        <label for="profPrat">Profundidade da prateleira (cm)</label>
+        <input type="number" id="profPrat" min="1" step="1">
+        <label for="profPadrao">Profundidade de um produto (cm)</label>
+        <input type="number" id="profPadrao" min="0.5" step="0.5">
+        <div id="profClasses"></div>
+        <button type="button" id="salvarCal">Salvar calibração</button>
+        <p class="nota" id="calMsg" role="status"></p>
+      </details>
 
       <div class="separado">
         <h2>Sobre o modelo</h2>
@@ -71,8 +97,20 @@
         <span class="canto c1"></span><span class="canto c2"></span><span class="canto c3"></span><span class="canto c4"></span>
         <span class="mira" id="vazio">Escolha uma fonte e clique em Testar</span>
         <img id="saida" class="oculto" alt="Imagem com as detecções do modelo">
+        <span class="marca-cal frente oculto" id="marca-frente">beirada</span>
+        <span class="marca-cal fundo oculto" id="marca-fundo">fundo</span>
       </div>
       <div class="etiquetas" id="chips" aria-live="polite"></div>
+
+      <div class="separado">
+        <div class="painel-topo">
+          <h2>Estoque</h2>
+          <span class="mqtt" id="mqtt" title="">MQTT</span>
+        </div>
+        <div class="estoque" id="estoque" aria-live="polite">
+          <span class="nota" style="margin:0">A contagem aparece aqui quando o modelo reconhecer produtos.</span>
+        </div>
+      </div>
     </section>
   </div>
 </div>
@@ -154,9 +192,37 @@ function corDaClasse(id) {
   return `--cor:#${hex};--cor-texto:${claro ? "#0A1033" : "#FFFFFF"}`;
 }
 
+// estoque: contagem de cada produto (a mesma que vai pro MQTT)
+function estoque(contagem) {
+  const itens = Object.entries(contagem || {});
+  if (!itens.length) {
+    $("estoque").innerHTML = '<span class="nota" style="margin:0">Nenhum produto à vista.</span>';
+    return;
+  }
+  const total = itens.reduce((s, [, n]) => s + n, 0);
+  $("estoque").innerHTML = itens.map(([p, n]) =>
+    `<div class="item-estoque"><span>${p.replaceAll("_", " ")}</span><b>${n}</b></div>`).join("")
+    + `<div class="item-estoque total"><span>Total</span><b>${total}</b></div>`;
+}
+function statusMqtt(m) {
+  const el = $("mqtt");
+  el.classList.toggle("ligado", !!m.conectado);
+  el.textContent = m.conectado ? "MQTT conectado" : (m.ativo ? "MQTT conectando…" : "MQTT desligado");
+  el.title = m.conectado ? `${m.broker} · tópicos ${m.prefixo}/contagem e ${m.prefixo}/deteccoes` : (m.erro || m.broker || "");
+}
+async function atualizarEstoque(comContagem) {
+  try {
+    const m = await (await fetch("/contagem")).json();
+    statusMqtt(m);
+    if (comContagem) estoque(m.contagem);
+  } catch {}
+}
+setInterval(() => atualizarEstoque(!$("parar").classList.contains("oculto")), 1000);
+atualizarEstoque(false);
+
 function chips(deteccoes) {
   $("chips").innerHTML = deteccoes.length
-    ? deteccoes.map(d => `<span class="etiqueta" style="${corDaClasse(d.id)}">${d.classe}<b>${d.conf.toFixed(2)}</b></span>`).join("")
+    ? deteccoes.map(d => `<span class="etiqueta" style="${corDaClasse(d.id)}">${d.classe}${d.quantidade > 1 ? ` ×${d.quantidade}` : ""}${d.proximidade != null ? ` · ${d.proximidade}% perto` : ""}<b>${d.conf.toFixed(2)}</b></span>`).join("")
     : '<span class="nota" style="margin:0">Nada reconhecido. Tente baixar a confiança mínima.</span>';
 }
 
@@ -199,6 +265,7 @@ $("botao").onclick = async () => {
   dados.append("arquivo", arquivo);
   dados.append("conf", conf);
   dados.append("modelo", $("modelo").value);
+  dados.append("prof", $("usarProf").value);
   $("botao").disabled = true;
   $("botao").textContent = modo === "imagem" ? "Analisando…" : "Enviando vídeo…";
 
@@ -209,6 +276,7 @@ $("botao").onclick = async () => {
     if (modo === "imagem") {
       mostrar(j.imagem);
       chips(j.deteccoes);
+      estoque(j.contagem);
       aoVivo(false, `${j.tempo_ms.toFixed(0)} ms`);
     } else {
       iniciarStream(`/stream?fonte=${encodeURIComponent(j.id)}&conf=${conf}`);
@@ -221,7 +289,7 @@ $("botao").onclick = async () => {
 };
 
 function iniciarStream(url) {
-  mostrar(url + "&modelo=" + $("modelo").value + "&t=" + Date.now());
+  mostrar(url + "&modelo=" + $("modelo").value + "&prof=" + $("usarProf").value + "&t=" + Date.now());
   $("botao").classList.add("oculto");
   $("parar").classList.remove("oculto");
   aoVivo(true, "ao vivo");
@@ -234,6 +302,87 @@ $("saida").onerror = () => {
 };
 
 try { $("urlEsp").value = localStorage.getItem("lara_url_esp") || ""; } catch {}
+try { $("usarProf").value = localStorage.getItem("lara_prof") || "0"; } catch {}
+if (!$("usarProf").value) $("usarProf").value = "0";
+function modoProf() {
+  try { localStorage.setItem("lara_prof", $("usarProf").value); } catch {}
+  $("calibrar").classList.toggle("oculto", $("usarProf").value !== "1");
+  if (typeof notaProf !== "undefined") $("notaProf").innerHTML = notaProf();
+  if (typeof posMarcas !== "undefined") posMarcas();
+}
+$("usarProf").onchange = modoProf;
+
+// ---------- calibracao da prateleira (profundidade)
+let cal = null, marcando = null, infoProf = null;
+function notaProf() {
+  const m = $("usarProf").value;
+  if (m === "0" || !infoProf) return "";
+  if (!infoProf.disponivel) return "Precisa instalar: <b>venv\\Scripts\\pip install transformers</b>";
+  if (m === "rel") return "Mostra o mapa de profundidade ao lado (claro = perto) e o quão perto cada objeto está. Não precisa calibrar.";
+  return infoProf.calibrada ? "Calibrada. Cada fileira mostra ×N (quantos tem, contando os de trás)."
+    : "Ainda sem calibração: abra <b>Calibrar prateleira</b> abaixo.";
+}
+async function carregarCal() {
+  try {
+    const j = await (await fetch("/calibracao")).json();
+    cal = j.calibracao;
+    $("distCamera").value = cal.dist_camera_cm;
+    $("profPrat").value = cal.prof_prateleira_cm;
+    $("profPadrao").value = cal.prof_padrao_cm;
+    $("profClasses").innerHTML = (j.classes.length && j.classes.length <= 30) ? j.classes.map(c =>
+      `<label for="pc-${c}">Profundidade de ${c.replaceAll("_", " ")} (cm)</label>
+       <input type="number" id="pc-${c}" data-classe="${c}" min="0.5" step="0.5" placeholder="${cal.prof_padrao_cm}"
+              value="${cal.prof_produto_cm[c] ?? ""}">`).join("") : "";
+    infoProf = j;
+    modoProf();
+    posMarcas();
+  } catch {}
+}
+function posMarcas() {
+  const img = $("saida");
+  for (const k of ["frente", "fundo"]) {
+    const el = $("marca-" + k);
+    const p = cal && cal[k];
+    el.classList.toggle("oculto", !p || $("usarProf").value !== "1" || img.classList.contains("oculto") || !img.clientWidth);
+    if (p) {
+      el.style.left = (img.offsetLeft + p[0] * img.clientWidth) + "px";
+      el.style.top = (img.offsetTop + p[1] * img.clientHeight) + "px";
+    }
+  }
+}
+document.querySelectorAll("[data-marca]").forEach(b => b.onclick = () => {
+  if ($("saida").classList.contains("oculto")) { $("calMsg").textContent = "Primeiro comece um teste pra ter a imagem da câmera."; return; }
+  marcando = b.dataset.marca;
+  $("viewer").classList.add("marcando");
+  $("calMsg").textContent = marcando === "frente" ? "Clique na imagem, na beirada da prateleira." : "Clique na imagem, num ponto da parede do fundo.";
+});
+$("saida").onclick = e => {
+  if (!marcando || !cal) return;
+  const r = $("saida").getBoundingClientRect();
+  cal[marcando] = [(e.clientX - r.left) / r.width, (e.clientY - r.top) / r.height];
+  $("calMsg").textContent = (marcando === "frente" ? "Beirada" : "Fundo") + " marcado. Salve quando terminar.";
+  marcando = null;
+  $("viewer").classList.remove("marcando");
+  posMarcas();
+};
+$("salvarCal").onclick = async () => {
+  if (!cal) return;
+  const porClasse = {};
+  document.querySelectorAll("[data-classe]").forEach(i => { if (i.value) porClasse[i.dataset.classe] = Number(i.value); });
+  const corpo = { frente: cal.frente, fundo: cal.fundo, dist_camera_cm: Number($("distCamera").value),
+                  prof_prateleira_cm: Number($("profPrat").value), prof_padrao_cm: Number($("profPadrao").value),
+                  prof_produto_cm: porClasse };
+  try {
+    const r = await fetch("/calibracao", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(corpo) });
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.erro);
+    $("calMsg").textContent = (cal.frente && cal.fundo) ? "Calibração salva. Reinicie o teste pra usar." : "Salvo, mas falta marcar a beirada e o fundo.";
+    carregarCal();
+  } catch (err) { $("calMsg").textContent = "Não salvou: " + err.message; }
+};
+window.addEventListener("resize", posMarcas);
+$("saida").addEventListener("load", posMarcas);
+carregarCal();
 try { $("numCamera").value = localStorage.getItem("lara_num_camera") || "0"; } catch {}
 
 function carregarInfo() {
@@ -259,6 +408,7 @@ function carregarInfo() {
   });
 }
 $("modelo").onchange = () => {
+  setTimeout(carregarCal, 300);
   pararStream();
   try { localStorage.setItem("lara_modelo_teste", $("modelo").value); } catch {}
   carregarInfo();

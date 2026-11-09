@@ -9,3 +9,7 @@ rfdetr[train]
 mediapipe
 pymunk
 pillow
+# MQTT (deteccoes e contagem do estoque)
+paho-mqtt
+# profundidade (contar produtos escondidos atras do primeiro da fileira)
+transformers

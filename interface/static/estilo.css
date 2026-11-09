@@ -453,6 +453,35 @@ button + button.secundario { margin-top: 10px; }
 }
 .etiqueta b { font-weight: 500; font-variant-numeric: tabular-nums; opacity: .8; }
 
+/* calibracao da prateleira (profundidade) */
+.calibrar summary { cursor: pointer; font-weight: 700; color: var(--texto); }
+.calibrar[open] summary { margin-bottom: 6px; }
+.marcar { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 12px; }
+.marcar button, .marcar button + button.secundario { margin: 0; }
+.visor.marcando img { cursor: crosshair; outline: 2px dashed var(--acento); }
+.marca-cal {
+  position: absolute; z-index: 2; transform: translate(-50%, -50%); pointer-events: none;
+  padding: 2px 8px; border-radius: 10px; font: 700 12px/1.4 var(--fonte-texto); color: #0B0B0B;
+}
+.marca-cal.frente { background: #50FFA0; }
+.marca-cal.fundo { background: #E678FF; }
+.marca-cal.oculto { display: none; }
+
+/* estoque (contagem por produto) e status do MQTT */
+.estoque { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 8px; margin-top: 12px; }
+.item-estoque {
+  display: flex; justify-content: space-between; align-items: baseline; gap: 10px;
+  padding: 10px 12px; border: 1px solid var(--campo-borda); border-radius: var(--campo-raio);
+  background: var(--campo-bg); color: var(--texto-2); font-size: 14px; text-transform: capitalize;
+}
+.item-estoque b { color: var(--texto); font: 700 22px/1 var(--fonte-texto); font-variant-numeric: tabular-nums; }
+.item-estoque.total { border-color: var(--acento); }
+.item-estoque.total b { color: var(--acento); }
+.mqtt { display: inline-flex; align-items: center; gap: 7px; color: var(--texto-2); font-size: 13px; font-weight: 700; }
+.mqtt::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--texto-2); opacity: .6; }
+.mqtt.ligado { color: var(--texto); }
+.mqtt.ligado::before { background: #2BD576; opacity: 1; box-shadow: 0 0 8px #2BD576; }
+
 .info-modelo { color: var(--texto-2); font-size: 14px; line-height: 1.6; overflow-wrap: anywhere; }
 .info-modelo b { color: var(--texto); font-weight: 700; }
 
