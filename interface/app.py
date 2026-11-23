@@ -458,36 +458,65 @@ def index():
     return render_template("index.html")
 
 
+@app.get("/classes")
+def classes_existentes():
+    """Tags que ja existem no dataset (sugestoes no campo de tag)."""
+    try:
+        with open(os.path.join(RAIZ, "dataset", "classes.json"), encoding="utf-8") as f:
+            return jsonify(classes=sorted(json.load(f)))
+    except (OSError, ValueError):
+        return jsonify(classes=[])
+
+
 @app.post("/enviar")
 def enviar():
+    """
+    Recebe um ou varios videos. Cada video tem a sua tag (videos com a mesma tag viram a mesma classe)
+    ou e marcado como 'so fundo'. Importa um por um e depois treina uma vez so.
+    """
     if estado["rodando"]:
         return jsonify(erro="ja tem um processo rodando"), 409
 
-    video = request.files.get("video")
-    produto = (request.form.get("produto") or "").strip()
-    fundo = request.form.get("fundo") == "true"
+    videos = [v for v in request.files.getlist("videos") if v and v.filename]
+    if videos:
+        tags = request.form.getlist("tags")
+        fundos = [f == "true" for f in request.form.getlist("fundos")]
+    else:   # formato antigo: um video so
+        unico = request.files.get("video")
+        videos = [unico] if unico and unico.filename else []
+        tags = [request.form.get("produto") or ""]
+        fundos = [request.form.get("fundo") == "true"]
     preview = request.form.get("preview") == "true"
     opcoes, erro = lerOpcoesTreino()
 
-    if not video or not video.filename:
-        return jsonify(erro="envie um video"), 400
-    if not fundo and not produto:
-        return jsonify(erro="informe o nome do produto"), 400
+    if not videos:
+        return jsonify(erro="envie pelo menos um video"), 400
+    if len(tags) != len(videos) or len(fundos) != len(videos):
+        return jsonify(erro="cada video precisa de uma tag (ou ser marcado como fundo)"), 400
+    tags = [t.strip() for t in tags]
+    sem_tag = [v.filename for v, t, f in zip(videos, tags, fundos) if not f and not t]
+    if sem_tag:
+        return jsonify(erro="falta a tag de: " + ", ".join(sem_tag)), 400
     if erro:
         return jsonify(erro=erro), 400
 
     os.makedirs(PASTA_UPLOADS, exist_ok=True)
-    nome = f"{int(time.time())}_{os.path.basename(video.filename)}"
-    caminho = os.path.join(PASTA_UPLOADS, nome)
-    video.save(caminho)
+    etapas = []
+    agora = int(time.time())
+    for i, (video, tag, fundo) in enumerate(zip(videos, tags, fundos), 1):
+        nome = f"{agora}_{i}_{os.path.basename(video.filename)}"
+        caminho = os.path.join(PASTA_UPLOADS, nome)
+        video.save(caminho)
+        comando = [PYTHON, "-u", SCRIPT, caminho, "--fundo" if fundo else tag, "--sem-treino"]
+        if preview:
+            comando.append("--preview")
+        rotulo = "fundo" if fundo else tag
+        titulo = f"importar {i}/{len(videos)} ({rotulo})" if len(videos) > 1 else f"importar video ({rotulo})"
+        etapas.append((titulo, "extraindo frames", comando))
 
-    comando = [PYTHON, "-u", SCRIPT, caminho, "--fundo" if fundo else produto, "--sem-treino"]
-    if preview:
-        comando.append("--preview")
-
-    etapas = [("importar video", "extraindo frames", comando)] + etapasDeTreino(*opcoes)
+    etapas += etapasDeTreino(*opcoes)
     comecar(etapas, "extraindo frames")
-    return jsonify(ok=True)
+    return jsonify(ok=True, videos=len(videos))
 
 
 @app.post("/treinar")

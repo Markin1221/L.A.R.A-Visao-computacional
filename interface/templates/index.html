@@ -6,23 +6,34 @@
 </head>
 <body>
 <div class="pagina">
-  {% set aba = "treinar" %}{% set subtitulo = "Ensine um produto novo a partir de um vídeo" %}
+  {% set aba = "treinar" %}{% set subtitulo = "Ensine produtos novos a partir de vídeos" %}
   {% include "_topo.html" %}
 
   <div class="grade">
     <form class="painel" id="form">
-      <h2>Novo produto</h2>
-      <p>Grave o produto girando sobre um fundo liso e claro.</p>
+      <h2>Novos vídeos</h2>
+      <p>Grave cada produto girando sobre um fundo liso. Pode mandar vários vídeos de uma vez: vídeos com a mesma tag viram o mesmo produto.</p>
 
-      <div class="solta" id="drop" tabindex="0" role="button" aria-label="Escolher vídeo">
+      <div class="solta" id="drop" tabindex="0" role="button" aria-label="Escolher vídeos">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M3 8V4h4M17 4h4v4M21 16v4h-4M7 20H3v-4"/><path d="M10 9.5v5l4-2.5z" fill="currentColor" stroke="none"/></svg>
-        <strong id="nomeArquivo">Arraste o vídeo aqui</strong>
-        <span>ou clique para escolher</span>
+        <strong id="nomeArquivo">Arraste os vídeos aqui</strong>
+        <span>ou clique para escolher (pode ser mais de um)</span>
       </div>
-      <input type="file" id="video" accept="video/*" hidden>
+      <input type="file" id="video" accept="video/*" multiple hidden>
 
-      <label for="produto">Nome do produto</label>
-      <input type="text" id="produto" placeholder="ex: coca cola 2l" autocomplete="off">
+      <div class="oculto" id="blocoVideos">
+        <div class="tag-lote">
+          <input type="text" id="produto" list="tagsConhecidas" placeholder="tag pros marcados, ex: monster mango" autocomplete="off" aria-label="Tag para os vídeos marcados">
+          <button type="button" id="aplicarTag" class="pequeno">Aplicar</button>
+        </div>
+        <div class="lista-videos-topo">
+          <label><input type="checkbox" id="marcarTodos" checked> Marcar todos</label>
+          <span id="contaVideos"></span>
+        </div>
+        <ul class="lista-videos" id="listaVideos"></ul>
+        <div class="etiquetas" id="grupos"></div>
+      </div>
+      <datalist id="tagsConhecidas"></datalist>
 
       <label for="modeloTreino">Modelo</label>
       <select id="modeloTreino">
@@ -42,11 +53,11 @@
       <input type="number" id="epocas" value="50" min="1">
 
       <div class="escolhas">
-        <label><input type="checkbox" id="fundo"> O vídeo mostra só o fundo, sem produto</label>
         <label><input type="checkbox" id="preview" checked> Salvar imagens com a caixa para conferir</label>
       </div>
 
       <button type="submit" id="botao">Enviar e treinar</button>
+      <div class="barra-envio oculto" id="barraEnvio"><i id="barraEnvioCheia"></i></div>
       <button type="button" id="retreinar" class="secundario">Só treinar, sem vídeo novo</button>
       <div class="erro" id="msg" role="alert"></div>
     </form>
@@ -76,7 +87,7 @@
       <h2>Registro do treino</h2>
       <div class="escolhas"><label><input type="checkbox" id="rolar" checked> Acompanhar o fim</label></div>
     </div>
-    <pre id="log">Nada rodando. Envie um vídeo para começar.</pre>
+    <pre id="log">Nada rodando. Envie vídeos para começar.</pre>
   </section>
     </div>
   </div>
@@ -85,20 +96,93 @@
 <script>
 const $ = id => document.getElementById(id);
 const drop = $("drop"), inputVideo = $("video");
-let arquivo = null, timer = null;
+let videos = [], timer = null;   // {arquivo, tag, fundo, marcado}
 
-function escolher(f) {
-  if (!f) return;
-  arquivo = f;
-  $("nomeArquivo").textContent = `${f.name} (${(f.size / 1048576).toFixed(1)} MB)`;
+const escapar = t => t.replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const normalizar = t => t.trim().toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "");
+
+function adicionar(lista) {
+  const ja = new Set(videos.map(v => v.arquivo.name + v.arquivo.size));
+  // a tag digitada no campo de cima ja vai pros videos novos
+  const tag = $("produto").value.trim();
+  for (const f of lista) {
+    if (!f.type.startsWith("video/") && !/\.(mp4|mov|avi|mkv|webm|m4v)$/i.test(f.name)) continue;
+    if (ja.has(f.name + f.size)) continue;
+    videos.push({ arquivo: f, tag, fundo: false, marcado: true });
+  }
+  desenharLista();
 }
+
+function desenharLista() {
+  $("blocoVideos").classList.toggle("oculto", !videos.length);
+  $("nomeArquivo").textContent = videos.length ? "Adicionar mais vídeos" : "Arraste os vídeos aqui";
+  const mb = videos.reduce((s, v) => s + v.arquivo.size, 0) / 1048576;
+  $("contaVideos").textContent = `${videos.length} vídeo${videos.length > 1 ? "s" : ""} · ${mb.toFixed(0)} MB`;
+  $("marcarTodos").checked = videos.length && videos.every(v => v.marcado);
+  $("listaVideos").innerHTML = videos.map((v, i) => `
+    <li class="${v.fundo ? "eh-fundo" : ""}">
+      <input type="checkbox" data-i="${i}" data-campo="marcado" ${v.marcado ? "checked" : ""} aria-label="Marcar ${escapar(v.arquivo.name)}">
+      <div class="video-info">
+        <span class="video-nome" title="${escapar(v.arquivo.name)}">${escapar(v.arquivo.name)}</span>
+        <span class="video-tam">${(v.arquivo.size / 1048576).toFixed(1)} MB</span>
+      </div>
+      <label class="video-fundo" title="O vídeo mostra só o fundo, sem produto"><input type="checkbox" data-i="${i}" data-campo="fundo" ${v.fundo ? "checked" : ""}> fundo</label>
+      <button type="button" class="tirar" data-tirar="${i}" aria-label="Tirar ${escapar(v.arquivo.name)}">×</button>
+      <input type="text" data-i="${i}" data-campo="tag" list="tagsConhecidas" value="${escapar(v.tag)}"
+             placeholder="${v.fundo ? "só fundo" : "tag"}" ${v.fundo ? "disabled" : ""} aria-label="Tag de ${escapar(v.arquivo.name)}">
+    </li>`).join("");
+  desenharGrupos();
+}
+
+function desenharGrupos() {
+  const grupos = {};
+  for (const v of videos) {
+    const chave = v.fundo ? "só fundo" : (normalizar(v.tag) || "sem tag");
+    grupos[chave] = (grupos[chave] || 0) + 1;
+  }
+  $("grupos").innerHTML = Object.entries(grupos).map(([t, n]) =>
+    `<span class="etiqueta" style="${t === "sem tag" ? "--cor:var(--perigo);--cor-texto:#fff" : ""}">${escapar(t)}<b>${n} vídeo${n > 1 ? "s" : ""}</b></span>`).join("");
+}
+
+$("listaVideos").addEventListener("input", e => {
+  const i = e.target.dataset.i, campo = e.target.dataset.campo;
+  if (i == null) return;
+  if (campo === "tag") { videos[i].tag = e.target.value; desenharGrupos(); return; }
+  videos[i][campo] = e.target.checked;
+  desenharLista();
+});
+$("listaVideos").addEventListener("click", e => {
+  const i = e.target.dataset.tirar;
+  if (i == null) return;
+  videos.splice(Number(i), 1);
+  desenharLista();
+});
+$("marcarTodos").onchange = () => { videos.forEach(v => v.marcado = $("marcarTodos").checked); desenharLista(); };
+$("aplicarTag").onclick = () => {
+  const tag = $("produto").value.trim();
+  if (!tag) { $("msg").textContent = "Escreva a tag no campo ao lado do botão."; return; }
+  const marcados = videos.filter(v => v.marcado);
+  if (!marcados.length) { $("msg").textContent = "Marque os vídeos que vão receber essa tag."; return; }
+  marcados.forEach(v => { v.tag = tag; v.fundo = false; v.marcado = false; });   // desmarca: ja pode marcar o proximo grupo
+  $("msg").textContent = "";
+  lembrarTag(tag);
+  desenharLista();
+};
+$("produto").onkeydown = e => { if (e.key === "Enter") { e.preventDefault(); $("aplicarTag").click(); } };
+
+let tagsConhecidas = new Set();
+function lembrarTag(t) {
+  const n = normalizar(t);
+  if (n && !tagsConhecidas.has(n)) { tagsConhecidas.add(n); $("tagsConhecidas").innerHTML = [...tagsConhecidas].sort().map(c => `<option value="${escapar(c)}">`).join(""); }
+}
+fetch("/classes").then(r => r.json()).then(j => j.classes.forEach(lembrarTag)).catch(() => {});
+
 drop.onclick = () => inputVideo.click();
 drop.onkeydown = e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); inputVideo.click(); } };
-inputVideo.onchange = () => escolher(inputVideo.files[0]);
+inputVideo.onchange = () => { adicionar(inputVideo.files); inputVideo.value = ""; };
 drop.ondragover = e => { e.preventDefault(); drop.classList.add("sobre"); };
 drop.ondragleave = () => drop.classList.remove("sobre");
-drop.ondrop = e => { e.preventDefault(); drop.classList.remove("sobre"); escolher(e.dataTransfer.files[0]); };
-$("fundo").onchange = () => { $("produto").disabled = $("fundo").checked; };
+drop.ondrop = e => { e.preventDefault(); drop.classList.remove("sobre"); adicionar(e.dataTransfer.files); };
 const mostrarTamanho = () => $("campoTamanho").classList.toggle("oculto", $("modeloTreino").value === "yolo");
 $("modeloTreino").onchange = () => { mostrarTamanho(); try { localStorage.setItem("lara_modelo_treino", $("modeloTreino").value); } catch {} };
 try { const salvo = localStorage.getItem("lara_modelo_treino"); if (salvo) $("modeloTreino").value = salvo; } catch {}
@@ -133,29 +217,56 @@ const epocasPedidas = () => Math.min(300, Math.max(1, parseInt($("epocas").value
 $("epocas").oninput = () => { if (!timer) desenharFita(epocasPedidas(), 0, -1, false); };
 desenharFita(epocasPedidas(), 0, -1, false);
 
+// envio com barra de progresso (varios videos podem ser centenas de MB)
+function enviarComProgresso(dados) {
+  return new Promise((ok, falha) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", "/enviar");
+    xhr.upload.onprogress = e => {
+      if (!e.lengthComputable) return;
+      const p = Math.round(100 * e.loaded / e.total);
+      $("barraEnvioCheia").style.width = p + "%";
+      $("botao").textContent = p < 100 ? `Enviando vídeos… ${p}%` : "Preparando…";
+    };
+    xhr.onload = () => {
+      let j = {};
+      try { j = JSON.parse(xhr.responseText); } catch {}
+      xhr.status < 300 ? ok(j) : falha(new Error(j.erro || "Não deu para enviar os vídeos."));
+    };
+    xhr.onerror = () => falha(new Error("A conexão com o servidor caiu durante o envio."));
+    xhr.send(dados);
+  });
+}
+
 $("form").onsubmit = async e => {
   e.preventDefault();
   $("msg").textContent = "";
-  if (!arquivo) { $("msg").textContent = "Escolha um vídeo para enviar."; return; }
-  if (!$("fundo").checked && !$("produto").value.trim()) { $("msg").textContent = "Dê um nome ao produto."; return; }
+  if (!videos.length) { $("msg").textContent = "Escolha pelo menos um vídeo."; return; }
+  const semTag = videos.filter(v => !v.fundo && !v.tag.trim());
+  if (semTag.length) { $("msg").textContent = `Falta a tag em ${semTag.length} vídeo${semTag.length > 1 ? "s" : ""}.`; return; }
 
   const dados = opcoesTreino(new FormData());
-  dados.append("video", arquivo);
-  dados.append("produto", $("produto").value);
-  dados.append("fundo", $("fundo").checked);
+  for (const v of videos) {
+    dados.append("videos", v.arquivo);
+    dados.append("tags", v.fundo ? "" : v.tag.trim());
+    dados.append("fundos", v.fundo);
+  }
   dados.append("preview", $("preview").checked);
 
-  $("botao").disabled = true;
-  $("botao").textContent = "Enviando vídeo…";
+  $("botao").disabled = $("retreinar").disabled = true;
+  $("barraEnvio").classList.remove("oculto");
+  $("barraEnvioCheia").style.width = "0%";
   try {
-    const r = await fetch("/enviar", { method: "POST", body: dados });
-    const j = await r.json();
-    if (!r.ok) throw new Error(j.erro || "Não deu para enviar o vídeo.");
+    await enviarComProgresso(dados);
+    videos.filter(v => !v.fundo).forEach(v => lembrarTag(v.tag));
+    videos = [];
+    desenharLista();
     iniciarPolling();
   } catch (err) {
     $("msg").textContent = err.message;
-    $("botao").disabled = false;
+    $("botao").disabled = $("retreinar").disabled = false;
   }
+  $("barraEnvio").classList.add("oculto");
   $("botao").textContent = "Enviar e treinar";
 };
 
@@ -190,7 +301,7 @@ async function atualizar() {
     : s.fase === "dataset insuficiente" ? "aviso" : "");
 
   $("etapa").textContent = s.etapas > 1 ? `Etapa ${s.etapa} de ${s.etapas}: ${s.nome_etapa}` : (s.nome_etapa ? s.nome_etapa : "");
-  $("resumo").innerHTML = (s.resumo || []).filter(r => r.nome !== "importar video").map(r =>
+  $("resumo").innerHTML = (s.resumo || []).filter(r => !r.nome.startsWith("importar")).map(r =>
     `<span class="etiqueta" style="--cor:${r.ok ? "var(--ok)" : "var(--perigo)"};--cor-texto:#fff">${r.nome}<b>${r.ok ? "pronto em " : "falhou em "}${tempo(r.segundos)}</b></span>`).join("");
   $("epoca").textContent = s.total ? `${s.epoca} de ${s.total}` : "–";
   $("decorrido").textContent = s.decorrido ? tempo(s.decorrido) : "–";

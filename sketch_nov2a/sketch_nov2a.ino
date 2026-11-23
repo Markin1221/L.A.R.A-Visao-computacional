@@ -6,10 +6,10 @@
 #include "esp_http_server.h"
 
 // ===== CONFIGURE AQUI =====
-//const char* WIFI_NOME  = "TIM ULTRAFIBRA_E570";
-//const char* WIFI_SENHA = "KKrt@71tkT";
-const char* WIFI_NOME  = "Markin";
-const char* WIFI_SENHA = "markin1221";
+const char* WIFI_NOME  = "TIM ULTRAFIBRA_E570";
+const char* WIFI_SENHA = "KKrt@71tkT";
+//const char* WIFI_NOME  = "Markin";
+//const char* WIFI_SENHA = "markin1221";
 const bool  VIRAR_IMAGEM = false;              // true se a imagem aparecer de cabeca pra baixo
 // ==========================
 

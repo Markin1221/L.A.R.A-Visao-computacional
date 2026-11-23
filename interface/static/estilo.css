@@ -341,6 +341,30 @@ button.secundario { background: var(--sec-bg); color: var(--sec-texto); text-sha
 button.secundario:hover { filter: brightness(1.1); }
 button + button.secundario { margin-top: 10px; }
 
+/* ---------- varios videos, cada um com a sua tag ---------- */
+.tag-lote { display: grid; grid-template-columns: 1fr auto; gap: 8px; margin-top: 16px; }
+button.pequeno, .lista-videos button {
+  width: auto; margin: 0; padding: 0 14px; font-size: 13px; clip-path: none; box-shadow: none;
+}
+.lista-videos-topo { display: flex; justify-content: space-between; align-items: center; margin-top: 14px; color: var(--texto-2); font-size: 13px; }
+.lista-videos-topo label { display: flex; align-items: center; gap: 8px; margin: 0; font-weight: 400; font-size: 13px; color: var(--texto-2); cursor: pointer; }
+.lista-videos { list-style: none; margin: 8px 0 0; padding: 0; display: grid; gap: 6px; max-height: 340px; overflow-y: auto; }
+.lista-videos li {
+  display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto; align-items: center; gap: 6px 8px;
+  padding: 8px 8px 8px 10px; border: 1px solid var(--campo-borda); border-radius: var(--campo-raio); background: var(--campo-bg);
+}
+.lista-videos li.eh-fundo { opacity: .75; }
+.video-info { display: grid; min-width: 0; }
+.video-nome { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--texto); font-size: 13px; font-weight: 600; }
+.video-tam { color: var(--texto-2); font-size: 12px; }
+.lista-videos input[type=text] { grid-column: 2 / -1; padding: 6px 8px; font-size: 13px; }
+.video-fundo { display: flex; align-items: center; gap: 5px; margin: 0; font-size: 12px; font-weight: 400; color: var(--texto-2); cursor: pointer; }
+.lista-videos button.tirar { padding: 2px 9px; font-size: 18px; line-height: 1; background: transparent; color: var(--texto-2); border: 0; }
+.lista-videos button.tirar:hover { color: var(--erro-texto); background: transparent; }
+#grupos { margin-top: 10px; min-height: 0; }
+.barra-envio { height: 4px; margin-top: 8px; background: var(--campo-borda); border-radius: 2px; overflow: hidden; }
+.barra-envio i { display: block; height: 100%; width: 0; background: var(--acento); transition: width .2s; }
+
 .erro { min-height: 20px; margin-top: 12px; color: var(--erro-texto); font-size: 14px; font-weight: 600; }
 .nota { margin: 8px 0 0; color: var(--texto-2); font-size: 13px; }
 
